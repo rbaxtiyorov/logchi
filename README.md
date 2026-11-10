@@ -3,6 +3,68 @@
 File logging for Spring Boot that works the moment you add the dependency. Built on SLF4J and Logback, so
 your existing `log.info(...)` calls and every library's logs flow through it unchanged.
 
+## Highlights
+
+**Slow and failing calls stand out.** One annotation logs every call of a bean. Entry and exit lines are DEBUG, so
+production at INFO only shows the calls that need attention:
+
+```java
+@Service
+@Logged(slowerThan = "500ms")
+public class PaymentService {
+    public Receipt charge(Order order, @Mask String cardNumber) { ... }
+}
+```
+
+```
+WARN  c.e.PaymentService : ← charge 611ms SLOW(>500ms) Receipt[id=42] durationMs=611
+ERROR c.e.PaymentService : ✗ charge 1203ms IllegalStateException: gateway down
+```
+
+**Every line belongs to a request and a user.** One command finds a whole request, across live and compressed
+files:
+
+```
+2026-11-10 14:36:21.683 INFO  [http-nio-8080-exec-6] [tid=e5f86c5f56ee116e uid=alice] c.e.OrderService : order created orderId=42
+```
+
+```bash
+zgrep e5f86c5f56ee116e logs/*
+```
+
+**Secrets don't reach disk.** Passwords, tokens, JSON secret fields and card numbers are masked in messages and
+stack traces alike. Line breaks in logged values are escaped, so user input can't fake extra log lines.
+
+```java
+log.info("login password={}", password);              // login password=***
+throw new IllegalStateException("token=" + token);    // token=*** in the stack trace too
+```
+
+**Retention in plain durations.** Files stay uncompressed while recent so they're easy to read, are gzipped after
+`hot`, and deleted after `cold`. Errors and audit trails can be kept longer than routine lines:
+
+```yaml
+logchi:
+  file:
+    retention: { hot: 1d, cold: 30d, max-total: 5GB }
+  levels:
+    error: { cold: 90d }                    # errors also get their own file
+  channels:
+    audit: { cold: 365d, format: json }     # Channels.get("audit").info("refund approved")
+```
+
+**Built for production.**
+- Each pod writes its own files on a shared volume, and files left by replaced pods are still compressed and
+  expired.
+- File logging pauses before the disk fills.
+- Under load, INFO and below are dropped first, while WARN and ERROR wait for space.
+
+**No setup.** Add the dependency, and one line at startup says where logs go and how much disk they use:
+
+```
+logchi: dir=/app/logs instance=api-7d9f format=text hot=1d cold=30d cap=5GB used=1.2GB(24%) channels=[audit] levels=[error]
+```
+
 ## Why not just Spring Boot's logging?
 
 Spring Boot can already write a rolling, gzipped log file, which is enough for one application writing one file.
