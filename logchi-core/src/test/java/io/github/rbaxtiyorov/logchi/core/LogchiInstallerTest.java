@@ -17,6 +17,7 @@ import java.util.stream.Stream;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
@@ -164,6 +165,25 @@ class LogchiInstallerTest {
         LogchiInstaller.uninstall();
         assertTrue(read("orders.pod-1.txt").contains("before"));
         assertTrue(read("orders.pod-1.txt").contains("after"));
+    }
+
+    /** Once the console is back, a line logged at once must reach the file too, so files have to be back first. */
+    @Test
+    void filesAreBackBeforeTheConsoleAfterAReset() {
+        LogchiSettings s = settings();
+        s.getConsole().setEnabled(true);
+        LogchiInstaller.install(context, s);
+        Logger root = context.getLogger(Logger.ROOT_LOGGER_NAME);
+        for (int round = 0; round < 3; round++) {
+            context.reset();
+            root.setLevel(Level.INFO);
+            long deadline = System.nanoTime() + 10_000_000_000L;
+            while (root.getAppender("logchi-console") == null && System.nanoTime() < deadline) {
+                Thread.onSpinWait();
+            }
+            assertNotNull(root.getAppender("logchi-console"), "appenders must come back after a reset");
+            assertNotNull(root.getAppender("logchi-async-orders"), "the file must be attached before the console");
+        }
     }
 
     @Test

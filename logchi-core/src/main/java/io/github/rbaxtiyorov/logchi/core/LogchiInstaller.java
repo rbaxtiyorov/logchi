@@ -234,10 +234,11 @@ public final class LogchiInstaller {
 
         private void attach() {
             ch.qos.logback.classic.Logger root = context.getLogger(Logger.ROOT_LOGGER_NAME);
-            attachConsole(root);
+            // Files first: once the console is back after a reset, every line must reach the files as well.
             if (settings.getFile().isEnabled()) {
                 attachFiles(root);
             }
+            attachConsole(root);
         }
 
         private void attachConsole(ch.qos.logback.classic.Logger root) {
