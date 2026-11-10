@@ -1,5 +1,7 @@
 # logchi
 
+[![Maven Central](https://img.shields.io/maven-central/v/io.github.rbaxtiyorov/logchi-core)](https://central.sonatype.com/namespace/io.github.rbaxtiyorov)
+
 File logging for Spring Boot that works the moment you add the dependency. Built on SLF4J and Logback, so
 your existing `log.info(...)` calls and every library's logs flow through it unchanged.
 
