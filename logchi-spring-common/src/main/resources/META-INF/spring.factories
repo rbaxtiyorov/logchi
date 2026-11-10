@@ -1,0 +1,2 @@
+org.springframework.context.ApplicationListener=\
+io.github.rbaxtiyorov.logchi.spring.LogchiBootstrapListener

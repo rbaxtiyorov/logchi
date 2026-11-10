@@ -1,0 +1,28 @@
+spring:
+  application:
+    name: orders
+
+logging:
+  level:
+    sample: DEBUG
+
+logchi:
+  dir: ./logs
+  file:
+    rotation:
+      period: daily
+      max-size: 100MB
+    retention:
+      hot: 1d
+      cold: 30d
+      max-total: 5GB
+  levels:
+    error:
+      cold: 90d
+  channels:
+    audit:
+      cold: 365d
+      format: json
+      async: false
+  context:
+    extra-headers: [X-Tenant-Id]

@@ -1,0 +1,67 @@
+{
+  "groups": [
+    { "name": "logchi", "type": "io.github.rbaxtiyorov.logchi.spring.LogchiProperties" }
+  ],
+  "properties": [
+    { "name": "logchi.enabled", "type": "java.lang.Boolean", "defaultValue": true, "description": "Turns logchi on or off." },
+    { "name": "logchi.dir", "type": "java.lang.String", "defaultValue": "./logs", "description": "Directory for log files." },
+    { "name": "logchi.app-name", "type": "java.lang.String", "description": "First part of file names. Defaults to spring.application.name." },
+    { "name": "logchi.instance-id", "type": "java.lang.String", "description": "Identifies this process in file names. Defaults to HOSTNAME, then the machine name." },
+    { "name": "logchi.stack-trace-lines", "type": "java.lang.Integer", "defaultValue": 30, "description": "Frames kept per exception. Causes are always kept. 0 means no limit." },
+
+    { "name": "logchi.console.enabled", "type": "java.lang.Boolean", "defaultValue": true, "description": "Replaces the console output with logchi's. False removes console output." },
+    { "name": "logchi.console.format", "type": "io.github.rbaxtiyorov.logchi.core.LogchiSettings$Format", "defaultValue": "text", "description": "text or json." },
+    { "name": "logchi.console.color", "type": "io.github.rbaxtiyorov.logchi.core.LogchiSettings$Color", "defaultValue": "auto", "description": "auto, always or never." },
+
+    { "name": "logchi.file.enabled", "type": "java.lang.Boolean", "defaultValue": true, "description": "Writes log files." },
+    { "name": "logchi.file.format", "type": "io.github.rbaxtiyorov.logchi.core.LogchiSettings$Format", "defaultValue": "text", "description": "text or json." },
+    { "name": "logchi.file.json-flavor", "type": "io.github.rbaxtiyorov.logchi.core.LogchiSettings$JsonFlavor", "defaultValue": "ecs", "description": "Field names used by the json format: ecs, logstash or compact." },
+    { "name": "logchi.file.extension", "type": "java.lang.String", "defaultValue": "txt", "description": "Log file extension." },
+
+    { "name": "logchi.file.rotation.period", "type": "io.github.rbaxtiyorov.logchi.core.LogchiSettings$Period", "defaultValue": "daily", "description": "hourly, daily or none." },
+    { "name": "logchi.file.rotation.max-size", "type": "java.lang.String", "defaultValue": "100MB", "description": "Rolls the file at this size. 0 means no limit." },
+
+    { "name": "logchi.file.retention.hot", "type": "java.lang.String", "defaultValue": "1d", "description": "Age since last write at which a rolled file is compressed." },
+    { "name": "logchi.file.retention.cold", "type": "java.lang.String", "defaultValue": "30d", "description": "Age since last write at which a rolled file is deleted." },
+    { "name": "logchi.file.retention.compress", "type": "java.lang.Boolean", "defaultValue": true, "description": "Compresses rolled files with gzip." },
+    { "name": "logchi.file.retention.compress-level", "type": "java.lang.Integer", "defaultValue": 6, "description": "Gzip level from 1 (fastest) to 9 (smallest)." },
+    { "name": "logchi.file.retention.max-total", "type": "java.lang.String", "defaultValue": "5GB", "description": "Cap on this application's log files. The oldest rolled files go first. 0 means no cap." },
+    { "name": "logchi.file.retention.min-free-disk", "type": "java.lang.String", "defaultValue": "1GB", "description": "File logging pauses below this much free disk. 0 disables the check." },
+    { "name": "logchi.file.retention.scope", "type": "io.github.rbaxtiyorov.logchi.core.LogchiSettings$Scope", "defaultValue": "shared", "description": "shared also cleans up after dead instances. own touches only this instance's files." },
+    { "name": "logchi.file.retention.check-interval", "type": "java.lang.String", "defaultValue": "5m", "description": "How often retention runs." },
+
+    { "name": "logchi.file.async.enabled", "type": "java.lang.Boolean", "defaultValue": true, "description": "Writes files on a background thread." },
+    { "name": "logchi.file.async.queue-size", "type": "java.lang.Integer", "defaultValue": 8192, "description": "Events buffered per file." },
+    { "name": "logchi.file.async.drop-below", "type": "java.lang.String", "defaultValue": "INFO", "description": "When the queue is nearly full, events at or below this level are dropped. WARN and ERROR are never dropped." },
+    { "name": "logchi.file.async.flush-timeout", "type": "java.lang.String", "defaultValue": "5s", "description": "How long shutdown waits for queued events." },
+
+    { "name": "logchi.levels", "type": "java.util.Map<java.lang.String,io.github.rbaxtiyorov.logchi.core.LogchiSettings$Sink>", "description": "Copies a level to its own file with its own retention. 'error' is on by default." },
+    { "name": "logchi.channels", "type": "java.util.Map<java.lang.String,io.github.rbaxtiyorov.logchi.core.LogchiSettings$Sink>", "description": "Named logs from Channels.get(name), each with its own file and retention." },
+
+    { "name": "logchi.mask.enabled", "type": "java.lang.Boolean", "defaultValue": true, "description": "Removes secrets from logs." },
+    { "name": "logchi.mask.use-defaults", "type": "java.lang.Boolean", "defaultValue": true, "description": "Includes the built-in sensitive keys such as password and token." },
+    { "name": "logchi.mask.cards", "type": "java.lang.Boolean", "defaultValue": true, "description": "Masks numbers that pass the card number check." },
+    { "name": "logchi.mask.keys", "type": "java.util.List<java.lang.String>", "description": "Extra sensitive keys, added to the built-in ones." },
+    { "name": "logchi.mask.patterns", "type": "java.util.List<java.lang.String>", "description": "Extra regular expressions to mask." },
+    { "name": "logchi.mask.replacement", "type": "java.lang.String", "defaultValue": "***", "description": "Text that replaces a secret." },
+
+    { "name": "logchi.context.enabled", "type": "java.lang.Boolean", "defaultValue": true, "description": "Adds request context to every log line." },
+    { "name": "logchi.context.trace-id", "type": "java.lang.Boolean", "defaultValue": true, "description": "Adds a trace id per request." },
+    { "name": "logchi.context.header", "type": "java.lang.String", "defaultValue": "X-Request-Id", "description": "Header the trace id is read from and returned in." },
+    { "name": "logchi.context.user-id", "type": "java.lang.String", "defaultValue": "principal", "description": "principal, header:<name> or none." },
+    { "name": "logchi.context.extra-headers", "type": "java.util.List<java.lang.String>", "description": "Headers to add to the context. X-Tenant-Id becomes tenantId." },
+
+    { "name": "logchi.logged.enabled", "type": "java.lang.Boolean", "defaultValue": true, "description": "Activates @Logged." },
+    { "name": "logchi.logged.level", "type": "java.lang.String", "defaultValue": "DEBUG", "description": "Level of @Logged entry and exit lines." },
+    { "name": "logchi.logged.slow-level", "type": "java.lang.String", "defaultValue": "WARN", "description": "Level of the exit line of a slow call." },
+    { "name": "logchi.logged.error-level", "type": "java.lang.String", "defaultValue": "ERROR", "description": "Level of the line logged when a method throws." },
+    { "name": "logchi.logged.slower-than", "type": "java.lang.String", "description": "Default slow threshold, such as 1s, for @Logged without its own." },
+    { "name": "logchi.logged.max-arg-length", "type": "java.lang.Integer", "defaultValue": 500, "description": "Longest rendered argument or result. 0 means no limit." }
+  ],
+  "hints": [
+    {
+      "name": "logchi.logged.level",
+      "values": [ { "value": "TRACE" }, { "value": "DEBUG" }, { "value": "INFO" }, { "value": "WARN" }, { "value": "ERROR" } ]
+    }
+  ]
+}
