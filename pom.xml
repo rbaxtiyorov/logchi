@@ -68,13 +68,6 @@
         <jackson.test.version>2.19.0</jackson.test.version>
     </properties>
 
-    <distributionManagement>
-        <repository>
-            <id>github</id>
-            <url>https://maven.pkg.github.com/rbaxtiyorov/logchi</url>
-        </repository>
-    </distributionManagement>
-
     <build>
         <pluginManagement>
             <plugins>

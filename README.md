@@ -3,22 +3,28 @@
 File logging for Spring Boot that works the moment you add the dependency. Built on SLF4J and Logback, so
 your existing `log.info(...)` calls and every library's logs flow through it unchanged.
 
-- Rotation by time and size, gzip compression, separate retention for hot and cold files
-- Secrets masked before they reach disk
-- Every line carries the request's trace id and user
-- `@Log` and `@Logged` remove logging boilerplate
-- Text or JSON output
-- Safe with many instances sharing a directory
+## Why not just Spring Boot's logging?
+
+Spring Boot can already write a rolling, gzipped log file, which is enough for one application writing one file.
+logchi handles what goes wrong after that in production: disks fill up, secrets end up in files, errors get lost
+among routine lines, and several pods write to the same volume.
+
+|  | Spring Boot's file logging | logchi |
+|---|---|---|
+| Turning it on | Set `logging.file.name`, otherwise logs only go to the console | Add the dependency. Files go to `./logs` |
+| Retention | Rolled files kept 7 days by default, with an optional size cap | Ages measured from the last write: uncompressed while recent, gzipped after `hot`, deleted after `cold`. Each level and channel can have its own |
+| Errors | Mixed into the main file | Also copied to their own file, kept 90 days by default |
+| Secrets | Written as logged | Passwords, tokens, JSON secret fields and card numbers masked before they reach disk |
+| Request context | Trace ids once Micrometer Tracing is added | Trace id and user on every line. An incoming `X-Request-Id` is reused and returned |
+| Full disk | No special handling | File logging pauses below a free-space floor, and a warning reports how many lines were skipped |
+| Many instances, one directory | Processes with the same file name write and roll the same file | Each instance writes its own files, and files left by replaced pods are still compressed and expired |
+| Method logging | Written by hand | `@Logged` logs calls and results, flags slow calls and masks `@Mask` arguments |
+| JSON | Built in from Boot 3.4 | Any Boot 3 or 4 version, chosen per file |
 
 ## Install
 
-Build it into your local `~/.m2`:
-
-```bash
-./mvnw install -DskipTests
-```
-
-Then add the starter that matches your Spring Boot version.
+logchi is on Maven Central, so there is no repository or token to set up. Add the starter that matches your
+Spring Boot version.
 
 ```xml
 <!-- Spring Boot 3 -->
@@ -248,47 +254,6 @@ a mounted volume, or the files disappear with the container.
 
 Without Spring, call `LogchiInstaller.install(loggerContext, settings)`, and `loggerContext.stop()` on exit so
 queued events are flushed.
-
-## Releasing
-
-### Maven Central
-
-One-time setup:
-
-1. Sign in at https://central.sonatype.com with the `rbaxtiyorov` GitHub account. The `io.github.rbaxtiyorov`
-   namespace is verified automatically.
-2. Create a GPG key and publish its public half: `gpg --full-generate-key`, then
-   `gpg --keyserver keyserver.ubuntu.com --send-keys <KEY_ID>`.
-3. Generate a user token in the Portal and add it to `~/.m2/settings.xml`:
-
-   ```xml
-   <settings>
-     <servers>
-       <server>
-         <id>central</id>
-         <username>TOKEN_USERNAME</username>
-         <password>TOKEN_PASSWORD</password>
-       </server>
-     </servers>
-   </settings>
-   ```
-
-Each release:
-
-```bash
-./mvnw clean deploy -Prelease -DskipUpload -Dgpg.skip   # dry run: builds target/central-publishing/central-bundle.zip
-./mvnw clean deploy -Prelease                           # signs, uploads and validates
-```
-
-The upload stays unpublished until it is published, or dropped, under Deployments in the Portal. A version on Maven
-Central can never be changed or deleted, so bump `<version>` in every POM before each release. The samples are
-never published.
-
-### GitHub Packages
-
-Pushing a tag like `v0.1.0` runs the CI workflow, which publishes to
-`https://maven.pkg.github.com/rbaxtiyorov/logchi`. To consume it, add that URL as a repository and put a token with
-`read:packages` in `~/.m2/settings.xml` under a matching server id.
 
 ## License
 
