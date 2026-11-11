@@ -304,6 +304,15 @@ class LoggedAndInjectionTest {
         @Logged
         public void fail() { throw new IllegalStateException("boom"); }
 
+        @Logged(quietOn = IllegalArgumentException.class)
+        public void notFound() { throw new IllegalArgumentException("no such order"); }
+
+        @Logged(slowerThan = "10ms")
+        public void slowFail() throws InterruptedException {
+            Thread.sleep(30);
+            throw new IllegalStateException("gave up");
+        }
+
         @Logged
         public void failThroughOuter() { self.fail(); }
 
@@ -376,5 +385,61 @@ class LoggedAndInjectionTest {
         new ApplicationContextRunner().withInitializer(new LogchiContextInitializer())
                 .withUserConfiguration(Beans.class)
                 .run(context -> assertSame(logger, context.getBean(Service.class).injected()));
+    }
+
+    /** For applications whose arguments are personal data: one switch instead of a flag on every annotation. */
+    @Test
+    void argumentsAndResultsCanBeTurnedOffEverywhere() {
+        runner.withPropertyValues("logchi.logged.args=false", "logchi.logged.result=false").run(context -> {
+            context.getBean(Service.class).greet("bob");
+            assertEquals("→ greet()", messages().get(0));
+            assertTrue(messages().get(1).matches("← greet \\d+ms"), messages().get(1));
+        });
+    }
+
+    /** "Not found" is an answer, not a failure: no ERROR and no stack trace. */
+    @Test
+    void expectedExceptionsAreLoggedQuietly() {
+        runner.run(context -> {
+            assertThrows(IllegalArgumentException.class, context.getBean(Service.class)::notFound);
+            ILoggingEvent line = events.list.get(1);
+            assertEquals(Level.DEBUG, line.getLevel());
+            assertTrue(line.getFormattedMessage().matches("✗ notFound \\d+ms IllegalArgumentException: no such order"),
+                    line.getFormattedMessage());
+            assertNull(line.getThrowableProxy());
+        });
+    }
+
+    @Test
+    void expectedExceptionsCanBeNamedInConfiguration() {
+        runner.withPropertyValues("logchi.logged.quiet-exceptions=java.lang.RuntimeException").run(context -> {
+            assertThrows(IllegalStateException.class, context.getBean(Service.class)::fail);
+            ILoggingEvent line = events.list.get(1);
+            assertEquals(Level.DEBUG, line.getLevel(), "a subclass of a listed exception counts");
+            assertNull(line.getThrowableProxy());
+        });
+    }
+
+    @Test
+    void aSlowCallThatFailsIsStillFlaggedSlow() {
+        runner.run(context -> {
+            assertThrows(IllegalStateException.class, context.getBean(Service.class)::slowFail);
+            ILoggingEvent line = events.list.get(1);
+            assertEquals(Level.ERROR, line.getLevel());
+            assertTrue(line.getFormattedMessage().matches("✗ slowFail \\d+ms SLOW\\(>10ms\\) IllegalStateException: gave up"),
+                    line.getFormattedMessage());
+        });
+    }
+
+    /** Quiet or not, a slow call must surface at the slow level. */
+    @Test
+    void aSlowExpectedExceptionRisesToTheSlowLevel() {
+        runner.withPropertyValues("logchi.logged.quiet-exceptions=IllegalStateException").run(context -> {
+            assertThrows(IllegalStateException.class, context.getBean(Service.class)::slowFail);
+            ILoggingEvent line = events.list.get(1);
+            assertEquals(Level.WARN, line.getLevel());
+            assertTrue(line.getFormattedMessage().contains("SLOW(>10ms)"), line.getFormattedMessage());
+            assertNull(line.getThrowableProxy());
+        });
     }
 }

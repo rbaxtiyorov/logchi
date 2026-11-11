@@ -28,14 +28,20 @@ public @interface Logged {
     /** Escalates the exit line to {@code logchi.logged.slow-level} past this duration, e.g. {@code 500ms}. */
     String slowerThan() default "";
 
-    /** Whether to log arguments. */
+    /** Whether to log arguments. {@code logchi.logged.args=false} turns them off everywhere. */
     boolean args() default true;
 
-    /** Whether to log the return value. */
+    /** Whether to log the return value. {@code logchi.logged.result=false} turns it off everywhere. */
     boolean result() default true;
 
     /** Longest rendered value. -1 means use {@code logchi.logged.max-arg-length}. */
     int maxLength() default -1;
+
+    /**
+     * Exceptions that are an expected outcome, such as "not found". They are logged at {@link #level()}
+     * without a stack trace. Adds to {@code logchi.logged.quiet-exceptions}.
+     */
+    Class<? extends Throwable>[] quietOn() default {};
 
     /** Level of the line logged when the method throws. */
     Level onError() default Level.DEFAULT;

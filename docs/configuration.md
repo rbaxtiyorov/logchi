@@ -87,6 +87,9 @@ logchi:
     error-level: ERROR
     slower-than:
     max-arg-length: 500
+    args: true
+    result: true
+    quiet-exceptions: []
 ```
 
 ## How settings are read
@@ -549,11 +552,52 @@ itself.
 | `logged.error-level` | `ERROR` | `onError` | Level of the line when the method throws (`✗`) |
 | `logged.slower-than` | none | `slowerThan` | How long a call may take before it counts as slow |
 | `logged.max-arg-length` | `500` | `maxLength` | Longest argument or result, in characters |
+| `logged.args` | `true` | `args` | Show method arguments |
+| `logged.result` | `true` | `result` | Show return values |
+| `logged.quiet-exceptions` | `[]` | `quietOn` | Exceptions that are an expected outcome |
 
 - Levels are `TRACE`, `DEBUG`, `INFO`, `WARN` or `ERROR`. Anything else stops startup.
 - With `slower-than` empty, nothing is flagged as slow unless an annotation sets its own `slowerThan`.
 - A longer value is cut and ends with the number of characters left out, such as `…(+1200)`. `0` means no limit.
 - Collections, maps and arrays are logged as their size, such as `ArrayList[size=3]`, never their contents.
+
+**`args` and `result`**: if your methods take or return personal data, turn both off here once, instead of on
+every annotation. An annotation can then no longer turn them on.
+
+```yaml
+logchi:
+  logged:
+    args: false
+    result: false
+```
+
+```
+DEBUG c.e.Payments : → pay()
+DEBUG c.e.Payments : ← pay 213ms
+```
+
+The line for a failed call still carries the exception's message. If your exception messages can contain
+personal data, such as "contract 1726 already exists", keep that in mind: masking only removes what it
+recognizes as a secret.
+
+**`quiet-exceptions`**: in many applications "not found" or "invalid input" is an exception, and an ordinary
+answer. List those types and they are logged at the normal level with no stack trace, while real failures stay
+at `error-level`. Subclasses count, and a short class name is enough.
+
+```yaml
+logchi:
+  logged:
+    quiet-exceptions: [NotFoundException, com.example.ValidationException]
+```
+
+For one method: `@Logged(quietOn = NotFoundException.class)`.
+
+**A slow call is flagged however it ends.** If the method throws after passing `slower-than`, the line carries
+`SLOW` and is logged at `slow-level` or higher, even for a quiet exception:
+
+```
+WARN c.e.Payments : ✗ pay 1840ms SLOW(>500ms) NotFoundException: no such order
+```
 
 ```yaml
 logchi:

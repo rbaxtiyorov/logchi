@@ -283,6 +283,23 @@
       "type": "java.lang.Integer",
       "defaultValue": 500,
       "description": "Longest rendered argument or result. 0 means no limit."
+    },
+    {
+      "name": "logchi.logged.args",
+      "type": "java.lang.Boolean",
+      "defaultValue": true,
+      "description": "Whether @Logged lines show method arguments. false turns them off for every @Logged."
+    },
+    {
+      "name": "logchi.logged.result",
+      "type": "java.lang.Boolean",
+      "defaultValue": true,
+      "description": "Whether @Logged lines show return values. false turns them off for every @Logged."
+    },
+    {
+      "name": "logchi.logged.quiet-exceptions",
+      "type": "java.util.List<java.lang.String>",
+      "description": "Exception class names that are an expected outcome. @Logged logs them at the normal level without a stack trace. Subclasses count."
     }
   ],
   "hints": [

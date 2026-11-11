@@ -22,6 +22,10 @@ public final class TextEncoder extends LogchiEncoder {
     private static final int LOGGER_LENGTH = 36;
     private static final int ABBREVIATION_CACHE = 4096;
 
+    /** Marker name and key that {@code @Logged} puts on its exit and failure lines. */
+    public static final String TIMED_MARKER = "logchi.timed";
+    public static final String DURATION_KEY = "durationMs";
+
     private static final String RESET = "\u001b[0m";
     private static final String DIM = "\u001b[2m";
     private static final String CYAN = "\u001b[36m";
@@ -56,7 +60,7 @@ public final class TextEncoder extends LogchiEncoder {
         appendContext(sb, e.getMDCPropertyMap());
         appendLogger(sb, e.getLoggerName());
         sb.append(" : ").append(maskedMessage(e, keepsLines(e.getLoggerName()) ? INDENTED : ONE_LINE));
-        appendKeyValues(sb, e.getKeyValuePairs());
+        appendKeyValues(sb, e.getKeyValuePairs(), isTimed(e));
         sb.append('\n');
         if (e.getThrowableProxy() != null) {
             sb.append(masker.mask(ThrowableRenderer.render(e.getThrowableProxy(), stackTraceLines)));
@@ -69,6 +73,20 @@ public final class TextEncoder extends LogchiEncoder {
         return TIME.format(Instant.ofEpochMilli(e.getTimeStamp())) + ' ' + String.format("%-5s", e.getLevel())
                 + " [" + oneLine(e.getThreadName()) + "] " + e.getLoggerName() + " : [logchi could not render this event: "
                 + failure.getClass().getSimpleName() + "]\n";
+    }
+
+    /** A {@code @Logged} line states its duration in the message. Repeating it as a key-value is noise in text. */
+    private static boolean isTimed(ILoggingEvent e) {
+        List<org.slf4j.Marker> markers = e.getMarkerList();
+        if (markers == null) {
+            return false;
+        }
+        for (org.slf4j.Marker marker : markers) {
+            if (TIMED_MARKER.equals(marker.getName())) {
+                return true;
+            }
+        }
+        return false;
     }
 
     private void appendLevel(StringBuilder sb, Level level) {
@@ -135,11 +153,14 @@ public final class TextEncoder extends LogchiEncoder {
         }
     }
 
-    private void appendKeyValues(StringBuilder sb, List<KeyValuePair> pairs) {
+    private void appendKeyValues(StringBuilder sb, List<KeyValuePair> pairs, boolean timed) {
         if (pairs == null) {
             return;
         }
         for (KeyValuePair pair : pairs) {
+            if (timed && DURATION_KEY.equals(pair.key)) {
+                continue;
+            }
             sb.append(' ').append(oneLine(pair.key)).append('=')
                     .append(quoted(maskField(pair.key, oneLine(String.valueOf(pair.value)))));
         }

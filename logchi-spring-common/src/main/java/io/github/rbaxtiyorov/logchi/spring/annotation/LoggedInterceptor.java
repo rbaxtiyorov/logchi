@@ -33,8 +33,15 @@ final class LoggedInterceptor implements MethodInterceptor {
     }
 
     private record Plan(Logger logger, String name, Level level, Level errorLevel, long slowMillis, String slowLabel,
-                        boolean args, boolean result, int maxLength, String[] parameters, String[] masks) {
+                        boolean args, boolean result, int maxLength, String[] parameters, String[] masks,
+                        Class<? extends Throwable>[] quietOn) {
     }
+
+    private static final org.slf4j.Marker TIMED =
+            org.slf4j.MarkerFactory.getMarker(io.github.rbaxtiyorov.logchi.core.encode.TextEncoder.TIMED_MARKER);
+
+    /** Whether an exception class counts as an expected outcome, by the configured names. */
+    private final Map<Class<?>, Boolean> quietByName = new ConcurrentHashMap<>();
 
     private final Map<Key, Plan> plans = new ConcurrentHashMap<>();
     private final LogchiSettings.Logged options;
@@ -115,7 +122,8 @@ final class LoggedInterceptor implements MethodInterceptor {
 
         String[] names = PARAMETER_NAMES.getParameterNames(specific);
         return new Plan(LoggerFactory.getLogger(key.target()), method.getName(), level, errorLevel, slowMillis,
-                slowerThan, logged.args(), logged.result(), maxLength, names, masks(specific));
+                slowerThan, logged.args() && options.isArgs(), logged.result() && options.isResult(), maxLength,
+                names, masks(specific), logged.quietOn());
     }
 
     private static String[] masks(Method method) {
@@ -164,19 +172,50 @@ final class LoggedInterceptor implements MethodInterceptor {
         }
         var event = plan.logger().atLevel(level);
         if (slow) {
-            event = event.addKeyValue("durationMs", millis);
+            event = event.addMarker(TIMED).addKeyValue("durationMs", millis);
         }
         event.log(line.toString());
     }
 
-    private static void logFailure(Plan plan, Throwable failure, long millis) {
-        if (!plan.logger().isEnabledForLevel(plan.errorLevel())) {
+    private boolean isQuiet(Plan plan, Throwable failure) {
+        for (Class<? extends Throwable> type : plan.quietOn()) {
+            if (type.isInstance(failure)) {
+                return true;
+            }
+        }
+        if (options.getQuietExceptions().isEmpty()) {
+            return false;
+        }
+        return quietByName.computeIfAbsent(failure.getClass(), type -> {
+            for (Class<?> c = type; c != null; c = c.getSuperclass()) {
+                if (options.getQuietExceptions().contains(c.getName())
+                        || options.getQuietExceptions().contains(c.getSimpleName())) {
+                    return true;
+                }
+            }
+            return false;
+        });
+    }
+
+    private void logFailure(Plan plan, Throwable failure, long millis) {
+        boolean quiet = isQuiet(plan, failure);
+        boolean slow = plan.slowMillis() >= 0 && millis > plan.slowMillis();
+        Level level = quiet ? plan.level() : plan.errorLevel();
+        // A call that was slow is worth knowing about however it ended.
+        if (slow && slowLevel.toInt() > level.toInt()) {
+            level = slowLevel;
+        }
+        if (!plan.logger().isEnabledForLevel(level)) {
             return;
         }
-        String line = "✗ " + plan.name() + " " + millis + "ms " + failure.getClass().getSimpleName()
-                + (failure.getMessage() != null ? ": " + failure.getMessage() : "");
+        String line = "✗ " + plan.name() + " " + millis + "ms " + (slow ? "SLOW(>" + plan.slowLabel() + ") " : "")
+                + failure.getClass().getSimpleName() + (failure.getMessage() != null ? ": " + failure.getMessage() : "");
+        var event = plan.logger().atLevel(level).addMarker(TIMED).addKeyValue("durationMs", millis);
+        if (quiet) {
+            event.log(line);
+            return;
+        }
         WeakReference<Throwable> last = LAST_LOGGED.get();
-        var event = plan.logger().atLevel(plan.errorLevel()).addKeyValue("durationMs", millis);
         if (last != null && last.get() == failure) {
             event.log(line + " (stack trace logged above)");
             return;

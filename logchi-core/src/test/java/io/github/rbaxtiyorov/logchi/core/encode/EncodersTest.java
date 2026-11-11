@@ -255,4 +255,19 @@ class EncodersTest {
         pool.shutdown();
         assertEquals(0, bad);
     }
+
+    /** A @Logged line already says "611ms" in its message. JSON keeps the field, text does not repeat it. */
+    @Test
+    void textDoesNotRepeatTheDurationOfATimedLine() throws Exception {
+        LoggingEvent e = event(Level.WARN, "← pay 611ms SLOW(>500ms)", null);
+        e.addMarker(org.slf4j.MarkerFactory.getMarker(TextEncoder.TIMED_MARKER));
+        e.addKeyValuePair(new KeyValuePair("durationMs", 611L));
+        e.addKeyValuePair(new KeyValuePair("orderId", 42));
+        assertTrue(text(e).endsWith(" : ← pay 611ms SLOW(>500ms) orderId=42\n"), text(e));
+        assertEquals(611, json(JsonFlavor.ECS, e).get("durationMs").asInt());
+
+        LoggingEvent plain = event(Level.INFO, "took a while", null);
+        plain.addKeyValuePair(new KeyValuePair("durationMs", 611L));
+        assertTrue(text(plain).endsWith(" : took a while durationMs=611\n"), "only timed lines are affected");
+    }
 }

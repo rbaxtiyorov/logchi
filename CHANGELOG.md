@@ -1,5 +1,20 @@
 # Changelog
 
+## 0.1.2
+
+### Added
+
+- `logchi.logged.args` and `logchi.logged.result`: turn arguments and return values off for every `@Logged`
+  at once. For applications whose methods handle personal data.
+- `logchi.logged.quiet-exceptions` and `@Logged(quietOn = …)`: exceptions that are an expected outcome are
+  logged at the normal level without a stack trace.
+
+### Changed
+
+- A call that passes `slower-than` and then throws is now flagged `SLOW` and logged at the slow level or
+  higher. Before, only calls that returned were flagged.
+- Text output no longer repeats the duration of a `@Logged` line as `durationMs=…`. JSON keeps the field.
+
 ## 0.1.1
 
 Upgrade from 0.1.0 is recommended: the first fix below can stop an application from logging.

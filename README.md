@@ -21,7 +21,7 @@ secrets out, and tag every line with the request and user behind it.
 <dependency>
     <groupId>io.github.rbaxtiyorov</groupId>
     <artifactId>logchi-spring-boot3-starter</artifactId>
-    <version>0.1.1</version>
+    <version>0.1.2</version>
 </dependency>
 ```
 
@@ -31,7 +31,7 @@ On Spring Boot 4, the artifact is `logchi-spring-boot4-starter`.
 <summary>Gradle</summary>
 
 ```kotlin
-implementation("io.github.rbaxtiyorov:logchi-spring-boot3-starter:0.1.1")
+implementation("io.github.rbaxtiyorov:logchi-spring-boot3-starter:0.1.2")
 ```
 
 </details>
@@ -56,8 +56,8 @@ already have, Lombok's `@Slf4j` and every library's logging end up in those file
 ```
 INFO  [tid=7f3a9c2e41d8b605 uid=ann] c.e.Orders : order created orderId=42 amount=99.5
 DEBUG [tid=7f3a9c2e41d8b605 uid=ann] c.e.Payments : → pay(orderId=42, card=***)
-WARN  [tid=7f3a9c2e41d8b605 uid=ann] c.e.Payments : ← pay 611ms SLOW(>500ms) PAID durationMs=611
-ERROR [tid=9b1c44e07a2d5f13 uid=bob] c.e.Payments : ✗ pay 3ms IOException: timeout durationMs=3
+WARN  [tid=7f3a9c2e41d8b605 uid=ann] c.e.Payments : ← pay 611ms SLOW(>500ms) PAID
+ERROR [tid=9b1c44e07a2d5f13 uid=bob] c.e.Payments : ✗ pay 3ms IOException: timeout
 ```
 
 Each line starts with a timestamp and thread name, left out here to fit.
@@ -179,8 +179,8 @@ public class Payments {
 ```
 DEBUG c.e.Payments : → pay(orderId=42, card=***)
 DEBUG c.e.Payments : ← pay 213ms PAID
-WARN  c.e.Payments : ← pay 611ms SLOW(>500ms) PAID durationMs=611
-ERROR c.e.Payments : ✗ pay 1203ms IOException: gateway down durationMs=1203
+WARN  c.e.Payments : ← pay 611ms SLOW(>500ms) PAID
+ERROR c.e.Payments : ✗ pay 1203ms SLOW(>500ms) IOException: gateway down
 ```
 
 To set one threshold for every `@Logged` in the app, use `logchi.logged.slower-than: 500ms`.

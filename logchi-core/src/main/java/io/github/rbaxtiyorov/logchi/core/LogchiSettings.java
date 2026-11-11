@@ -243,6 +243,9 @@ public class LogchiSettings {
         private String errorLevel = "ERROR";
         private String slowerThan = "";
         private int maxArgLength = 500;
+        private boolean args = true;
+        private boolean result = true;
+        private List<String> quietExceptions = new ArrayList<>();
 
         public boolean isEnabled() { return enabled; }
         public void setEnabled(boolean enabled) { this.enabled = enabled; }
@@ -256,5 +259,11 @@ public class LogchiSettings {
         public void setSlowerThan(String slowerThan) { this.slowerThan = slowerThan; }
         public int getMaxArgLength() { return maxArgLength; }
         public void setMaxArgLength(int maxArgLength) { this.maxArgLength = maxArgLength; }
+        public boolean isArgs() { return args; }
+        public void setArgs(boolean args) { this.args = args; }
+        public boolean isResult() { return result; }
+        public void setResult(boolean result) { this.result = result; }
+        public List<String> getQuietExceptions() { return quietExceptions; }
+        public void setQuietExceptions(List<String> quietExceptions) { this.quietExceptions = quietExceptions; }
     }
 }
