@@ -37,6 +37,15 @@ public final class JsonEncoder extends LogchiEncoder {
     }
 
     @Override
+    String fallback(ILoggingEvent e, Throwable failure) {
+        return new JsonWriter().field("@timestamp", Instant.ofEpochMilli(e.getTimeStamp()).toString())
+                .field("level", e.getLevel().toString())
+                .field("logger", e.getLoggerName())
+                .field("message", "[logchi could not render this event: " + failure.getClass().getSimpleName() + "]")
+                .finish();
+    }
+
+    @Override
     String render(ILoggingEvent e) {
         JsonWriter w = new JsonWriter();
         Map<String, Object> custom = customFields(e);
@@ -53,7 +62,7 @@ public final class JsonEncoder extends LogchiEncoder {
                 .field("ecs.version", "8.11")
                 .field("log.level", e.getLevel().toString())
                 .field("log.logger", e.getLoggerName())
-                .field("message", masker.mask(e.getFormattedMessage()))
+                .field("message", maskedMessage(e, AS_IS))
                 .field("process.thread.name", e.getThreadName())
                 .field("service.name", service)
                 .field("service.instance.id", instance);
@@ -77,7 +86,7 @@ public final class JsonEncoder extends LogchiEncoder {
     private void writeLogstash(JsonWriter w, ILoggingEvent e, Map<String, Object> custom) {
         w.field("@timestamp", Instant.ofEpochMilli(e.getTimeStamp()).toString())
                 .field("@version", "1")
-                .field("message", masker.mask(e.getFormattedMessage()))
+                .field("message", maskedMessage(e, AS_IS))
                 .field("logger_name", e.getLoggerName())
                 .field("thread_name", e.getThreadName())
                 .field("level", e.getLevel().toString())
@@ -94,7 +103,7 @@ public final class JsonEncoder extends LogchiEncoder {
         w.field("ts", e.getTimeStamp())
                 .field("lvl", e.getLevel().toString())
                 .field("log", e.getLoggerName())
-                .field("msg", masker.mask(e.getFormattedMessage()))
+                .field("msg", maskedMessage(e, AS_IS))
                 .field("th", e.getThreadName())
                 .field("svc", service)
                 .field("inst", instance);

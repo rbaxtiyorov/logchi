@@ -21,7 +21,7 @@ secrets out, and tag every line with the request and user behind it.
 <dependency>
     <groupId>io.github.rbaxtiyorov</groupId>
     <artifactId>logchi-spring-boot3-starter</artifactId>
-    <version>0.1.0</version>
+    <version>0.1.1</version>
 </dependency>
 ```
 
@@ -31,7 +31,7 @@ On Spring Boot 4, the artifact is `logchi-spring-boot4-starter`.
 <summary>Gradle</summary>
 
 ```kotlin
-implementation("io.github.rbaxtiyorov:logchi-spring-boot3-starter:0.1.0")
+implementation("io.github.rbaxtiyorov:logchi-spring-boot3-starter:0.1.1")
 ```
 
 </details>
@@ -118,6 +118,7 @@ Everything below is optional. Each recipe is the whole change.
 - [Keep errors longer than everything else](#keep-errors-longer-than-everything-else)
 - [Write an audit trail](#write-an-audit-trail)
 - [Send JSON to Elasticsearch, Loki or Datadog](#send-json-to-elasticsearch-loki-or-datadog)
+- [Give a noisy logger its own file](#give-a-noisy-logger-its-own-file)
 - [Hide a secret logchi doesn't know about](#hide-a-secret-logchi-doesnt-know-about)
 - [Put the tenant on every line](#put-the-tenant-on-every-line)
 - [Run many pods on one volume](#run-many-pods-on-one-volume)
@@ -244,6 +245,24 @@ logchi:
 
 That is one line in the file, spread out here to read. If your platform collects container output instead of files, use `logchi.console.format: json`. Field names for each flavor are listed under [File](docs/configuration.md#file).
 
+### Give a noisy logger its own file
+
+No code change needed. Name the logger, and its lines move out of the main file into their own, with their own
+retention:
+
+```yaml
+logchi:
+  channels:
+    http:
+      cold: 7d
+      console: true              # keep printing them on the console
+      loggers: [com.example.web.HttpLoggingFilter]
+  multiline-loggers:             # only if that logger writes multi-line messages
+    - com.example.web.HttpLoggingFilter
+```
+
+More in [Channels](docs/configuration.md#channels) and [General](docs/configuration.md#general).
+
 ### Hide a secret logchi doesn't know about
 
 Out of the box, logchi masks values whose key looks like a password, token, secret, authorization or CVV, plus
@@ -318,8 +337,7 @@ Send them to the build folder, where `mvn clean` removes them:
 @SpringBootTest(properties = "logchi.dir=target/logs")
 ```
 
-`logchi.enabled=false` switches the whole library off, including `@Log` injection, so those fields would be
-`null`. Prefer the line above.
+To write no files at all in tests, use `logchi.file.enabled=false`.
 
 ### Use it without Spring
 
@@ -386,7 +404,7 @@ bean and not `final`, and a call from inside the same object (`this.foo()`) is n
 A full text line:
 
 ```
-2026-11-10 17:04:59.637 INFO  [http-nio-8080-exec-2] [tid=cdccedcf8da5674c uid=alice tenantId=acme] c.e.OrderService : order created item=book amount=99.5
+2026-11-10 17:04:59.637+05:00 INFO  [http-nio-8080-exec-2] [tid=cdccedcf8da5674c uid=alice tenantId=acme] c.e.OrderService : order created item=book amount=99.5
 ```
 
 A full folder:
@@ -441,8 +459,7 @@ logchi counts the lost lines, retries, and logs a warning with the count.
 Not on a normal stop. Queued lines are flushed when the app shuts down, for up to `flush-timeout` (5s).
 
 **My `@Log` field is `null`.**
-The class isn't a Spring bean, or `logchi.enabled` is `false`. For classes Spring doesn't manage, use
-`Loggers.get()`. Lombok has an unrelated `@Log` for classes, so check the import is logchi's.
+The class isn't a Spring bean. For classes Spring doesn't manage, use `Loggers.get()`. Lombok has an unrelated `@Log` for classes, so check the import is logchi's.
 
 **`@Logged` logs nothing.**
 Entry and exit lines are DEBUG: set `logging.level.com.yourapp=DEBUG`, or use `@Logged(level = Logged.Level.INFO)`.

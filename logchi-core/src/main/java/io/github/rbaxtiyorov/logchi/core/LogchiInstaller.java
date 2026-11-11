@@ -9,6 +9,7 @@ import ch.qos.logback.core.ConsoleAppender;
 import ch.qos.logback.core.encoder.Encoder;
 import ch.qos.logback.core.spi.FilterReply;
 import io.github.rbaxtiyorov.logchi.core.LogchiSettings.Format;
+import io.github.rbaxtiyorov.logchi.core.appender.FileModes;
 import io.github.rbaxtiyorov.logchi.core.appender.FileNames;
 import io.github.rbaxtiyorov.logchi.core.appender.LevelDropAsyncAppender;
 import io.github.rbaxtiyorov.logchi.core.appender.LogchiFileAppender;
@@ -25,6 +26,7 @@ import org.slf4j.LoggerFactory;
 import java.io.Console;
 import java.io.IOException;
 import java.lang.reflect.Method;
+import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.Iterator;
@@ -53,8 +55,14 @@ public final class LogchiInstaller {
     public static synchronized void install(LoggerContext context, LogchiSettings settings) {
         uninstall();
         if (settings.isEnabled()) {
-            current = new Installation(context, settings);
-            current.begin();
+            Installation installation = new Installation(context, settings);
+            try {
+                installation.begin();
+            } catch (RuntimeException e) {
+                installation.end();
+                throw e;
+            }
+            current = installation;
         }
     }
 
@@ -74,6 +82,9 @@ public final class LogchiInstaller {
 
         private static final Logger log = LoggerFactory.getLogger("logchi");
         private static final String CONSOLE = "logchi-console";
+        /** How often the watchdog looks. Short, because lines logged while something is detached go astray. */
+        private static final long WATCH_MILLIS = 250;
+        private static final int TICKS_PER_SECOND = (int) (1_000 / WATCH_MILLIS);
 
         private final LoggerContext context;
         private final LogchiSettings settings;
@@ -82,6 +93,7 @@ public final class LogchiInstaller {
         private final String instance;
         private final FileGuardLock instanceLock;
         private final FileNames names;
+        private final FileModes modes;
         private final Masker masker;
         private final DiskGuard guard;
         private final Janitor janitor;
@@ -90,7 +102,11 @@ public final class LogchiInstaller {
         private final List<Attachment> attachments = new ArrayList<>();
         private final List<LevelDropAsyncAppender> asyncAppenders = new ArrayList<>();
         private final List<LogchiFileAppender> fileAppenders = new ArrayList<>();
-        private Attachment sentinel;
+        /** Loggers whose additivity logchi changed, with the value to put back. */
+        private final Map<ch.qos.logback.classic.Logger, Boolean> routed = new LinkedHashMap<>();
+        private boolean lockFailed;
+        /** Additivity logchi set, which a Logback reset silently undoes. */
+        private final Map<ch.qos.logback.classic.Logger, Boolean> expectedAdditive = new LinkedHashMap<>();
         private int ticks;
 
         private record Attachment(ch.qos.logback.classic.Logger logger, Appender<ILoggingEvent> appender) {
@@ -103,14 +119,47 @@ public final class LogchiInstaller {
             String name = settings.getAppName();
             this.appName = InstanceId.sanitize(name == null || name.isBlank() ? "app" : name);
             this.names = new FileNames(InstanceId.sanitize(settings.getFile().getExtension()));
+            this.modes = FileModes.parse(settings.getFile().getPermissions());
             this.masker = Masker.from(settings.getMask());
 
             LogchiSettings.Retention retention = settings.getFile().getRetention();
+            if (retention.getCompressLevel() < 1 || retention.getCompressLevel() > 9) {
+                throw new IllegalArgumentException("Invalid compress-level '" + retention.getCompressLevel()
+                        + "'. Use 1 (fastest) to 9 (smallest)");
+            }
             this.guard = new DiskGuard(dir, Parse.bytes(retention.getMinFreeDisk()));
+            // Everything that can be wrong is read before the instance lock is taken, so a refused
+            // configuration never leaves a lock behind.
+            Map<String, Janitor.Policy> policies = policies();
+            long maxTotal = Parse.bytes(retention.getMaxTotal());
+            Parse.durationMillis(retention.getCheckInterval());
+            LogchiSettings.Async async = settings.getFile().getAsync();
+            Parse.durationMillis(async.getFlushTimeout());
+            if (async.getQueueSize() < 16) {
+                throw new IllegalArgumentException("Invalid queue-size '" + async.getQueueSize() + "'. Use 16 or more");
+            }
+            String dropBelow = async.getDropBelow() == null ? "" : async.getDropBelow().trim().toUpperCase(Locale.ROOT);
+            if (!List.of("TRACE", "DEBUG", "INFO").contains(dropBelow)) {
+                throw new IllegalArgumentException("Invalid drop-below '" + async.getDropBelow()
+                        + "'. Use TRACE, DEBUG or INFO. WARN and ERROR are never dropped");
+            }
+            levelSinks().keySet().forEach(level -> {
+                if (Level.toLevel(level.toUpperCase(Locale.ROOT), null) == null) {
+                    throw new IllegalArgumentException("Unknown level in logchi.levels: " + level);
+                }
+            });
 
             String id = InstanceId.resolve(settings.getInstanceId());
-            FileGuardLock lock = lockInstance(id);
-            if (lock == null) {
+            // Without files there is nothing to guard, and the folder is left untouched.
+            boolean fresh = !Files.isDirectory(dir);
+            FileGuardLock lock = settings.getFile().isEnabled() ? lockInstance(id) : null;
+            if (fresh && Files.isDirectory(dir)) {
+                modes.applyToDirectory(dir);
+            }
+            if (Files.isDirectory(dir.resolve(".logchi"))) {
+                modes.applyToDirectory(dir.resolve(".logchi"));
+            }
+            if (lock == null && settings.getFile().isEnabled()) {
                 // Same id already live, e.g. two JVMs on one host. The pid makes this one distinct.
                 id = id + "-" + InstanceId.pid();
                 lock = lockInstance(id);
@@ -118,8 +167,8 @@ public final class LogchiInstaller {
             this.instance = id;
             this.instanceLock = lock;
 
-            this.janitor = new Janitor(dir, appName, instance, names, policies(), retention.isCompress(),
-                    retention.getCompressLevel(), Parse.bytes(retention.getMaxTotal()), retention.getScope());
+            this.janitor = new Janitor(dir, appName, instance, names, policies, retention.isCompress(),
+                    retention.getCompressLevel(), maxTotal, retention.getScope(), modes);
             this.scheduler = Executors.newScheduledThreadPool(2, runnable -> {
                 Thread thread = new Thread(runnable, "logchi-housekeeper");
                 thread.setDaemon(true);
@@ -129,9 +178,20 @@ public final class LogchiInstaller {
 
         private FileGuardLock lockInstance(String id) {
             try {
-                return FileGuardLock.tryAcquire(dir.resolve(".logchi").resolve(appName + "." + id + ".lock"));
+                Path file = dir.resolve(".logchi").resolve(appName + "." + id + ".lock");
+                FileGuardLock lock = FileGuardLock.tryAcquire(file);
+                if (lock != null) {
+                    modes.applyToFile(file);
+                }
+                return lock;
             } catch (IOException e) {
-                // An unwritable directory is reported by the appender. It must not stop startup.
+                // It must not stop startup. But without a lock nothing proves the id is free, and two
+                // processes writing one file corrupt it, so this is treated like an id that is taken.
+                if (!lockFailed) {
+                    lockFailed = true;
+                    System.err.println("logchi: cannot lock instance '" + id + "' in " + dir.resolve(".logchi")
+                            + ", adding the process id to file names: " + e);
+                }
                 return null;
             }
         }
@@ -142,7 +202,13 @@ public final class LogchiInstaller {
             policies.put(appName, new Janitor.Policy(Parse.durationMillis(retention.getHot()),
                     Parse.durationMillis(retention.getCold())));
             levelSinks().forEach((level, sink) -> policies.put(levelStem(level), policy(sink)));
-            channelSinks().forEach((channel, sink) -> policies.put(channelStem(channel), policy(sink)));
+            channelSinks().forEach((channel, sink) -> {
+                if (policies.containsKey(channelStem(channel))) {
+                    throw new IllegalArgumentException("Channel '" + channel
+                            + "' would share a file with the level of that name. Rename the channel");
+                }
+                policies.put(channelStem(channel), policy(sink));
+            });
             return policies;
         }
 
@@ -183,13 +249,21 @@ public final class LogchiInstaller {
             guard.check();
             attach();
             long interval = Parse.durationMillis(settings.getFile().getRetention().getCheckInterval());
-            scheduler.scheduleWithFixedDelay(this::watch, 1, 1, TimeUnit.SECONDS);
-            scheduler.scheduleWithFixedDelay(janitor::runSafely, 5_000, Math.max(interval, 1_000),
-                    TimeUnit.MILLISECONDS);
+            scheduler.scheduleWithFixedDelay(this::watch, WATCH_MILLIS, WATCH_MILLIS, TimeUnit.MILLISECONDS);
+            if (settings.getFile().isEnabled()) {
+                scheduler.scheduleWithFixedDelay(janitor::runSafely, 5_000, Math.max(interval, 1_000),
+                        TimeUnit.MILLISECONDS);
+            }
         }
 
         void end() {
             scheduler.shutdownNow();
+            try {
+                // A retention pass may be in the middle of a file. Let it finish before the caller moves on.
+                scheduler.awaitTermination(2, TimeUnit.SECONDS);
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+            }
             detach();
             if (instanceLock != null) {
                 try {
@@ -204,21 +278,45 @@ public final class LogchiInstaller {
         private void watch() {
             try {
                 synchronized (LogchiInstaller.class) {
-                    if (context.isStarted() && sentinel != null && !sentinel.logger().isAttached(sentinel.appender())) {
+                    if (context.isStarted() && !attachments.isEmpty() && !intact()) {
+                        repair();
+                    } else if (!context.isStarted() && !attachments.isEmpty()) {
+                        // Logback was shut down for good. A repair made while it was stopping must not linger.
                         detach();
-                        attach();
                     }
                 }
                 ticks++;
-                if (ticks % 5 == 0 && guard.check()) {
+                if (ticks % (5 * TICKS_PER_SECOND) == 0 && settings.getFile().isEnabled() && guard.check()) {
                     scheduler.execute(janitor::runSafely);
                 }
-                if (ticks % 60 == 0) {
-                    reportLosses();
+                if (ticks % (60 * TICKS_PER_SECOND) == 0) {
+                    synchronized (LogchiInstaller.class) {
+                        reportLosses();
+                    }
                 }
             } catch (Exception e) {
                 log.warn("logchi: watchdog failed: {}", e.toString());
             }
+        }
+
+        /**
+         * Every appender still attached and every routed logger still routed. Checking one of them is not
+         * enough: a reset walks the loggers one by one and can undo a logger after another was repaired.
+         */
+        private boolean intact() {
+            for (Attachment attachment : attachments) {
+                // A reset stops an appender seconds before it removes it from its logger. A stopped
+                // appender drops every event, so it counts as gone already.
+                if (!attachment.logger().isAttached(attachment.appender()) || !attachment.appender().isStarted()) {
+                    return false;
+                }
+            }
+            for (Map.Entry<ch.qos.logback.classic.Logger, Boolean> entry : expectedAdditive.entrySet()) {
+                if (entry.getKey().isAdditive() != entry.getValue()) {
+                    return false;
+                }
+            }
+            return true;
         }
 
         private void reportLosses() {
@@ -234,6 +332,14 @@ public final class LogchiInstaller {
 
         private void attach() {
             ch.qos.logback.classic.Logger root = context.getLogger(Logger.ROOT_LOGGER_NAME);
+            // Decided here and not with the files: a channel also keeps its lines out of the root console.
+            channelSinks().forEach((channel, sink) -> {
+                for (ch.qos.logback.classic.Logger logger : channelLoggers(channel, sink)) {
+                    routed.putIfAbsent(logger, logger.isAdditive());
+                    logger.setAdditive(sink.isAdditive());
+                    expectedAdditive.put(logger, sink.isAdditive());
+                }
+            });
             // Files first: once the console is back after a reset, every line must reach the files as well.
             if (settings.getFile().isEnabled()) {
                 attachFiles(root);
@@ -258,6 +364,14 @@ public final class LogchiInstaller {
                 appender.start();
                 root.addAppender(appender);
                 record(root, appender);
+                channelSinks().forEach((channel, sink) -> {
+                    if (sink.isConsole() && !sink.isAdditive()) {
+                        for (ch.qos.logback.classic.Logger logger : channelLoggers(channel, sink)) {
+                            logger.addAppender(appender);
+                            record(logger, appender);
+                        }
+                    }
+                });
             }
             // Swapped after ours is live so no line falls between the two.
             for (Appender<ILoggingEvent> appender : existing) {
@@ -274,13 +388,42 @@ public final class LogchiInstaller {
                 if (parsed == null) {
                     throw new IllegalArgumentException("Unknown level in logchi.levels: " + level);
                 }
-                attachSink(root, levelStem(level), formatOf(sink), asyncOf(sink), parsed);
+                Appender<ILoggingEvent> appender = attachSink(root, levelStem(level), formatOf(sink), asyncOf(sink),
+                        parsed);
+                // A channel that keeps out of the main log does not reach the root logger. Its errors
+                // still belong in the error file.
+                channelSinks().forEach((channel, channelSink) -> {
+                    if (!channelSink.isAdditive()) {
+                        for (ch.qos.logback.classic.Logger logger : channelLoggers(channel, channelSink)) {
+                            logger.addAppender(appender);
+                            record(logger, appender);
+                        }
+                    }
+                });
             });
             channelSinks().forEach((channel, sink) -> {
-                ch.qos.logback.classic.Logger logger = context.getLogger(Channels.PREFIX + channel);
-                logger.setAdditive(sink.isAdditive());
-                attachSink(logger, channelStem(channel), formatOf(sink), asyncOf(sink), null);
+                List<ch.qos.logback.classic.Logger> loggers = channelLoggers(channel, sink);
+                Appender<ILoggingEvent> appender = attachSink(loggers.get(0), channelStem(channel), formatOf(sink),
+                        asyncOf(sink), null);
+                for (ch.qos.logback.classic.Logger logger : loggers) {
+                    if (logger != loggers.get(0)) {
+                        logger.addAppender(appender);
+                        record(logger, appender);
+                    }
+                }
             });
+        }
+
+        /** The channel's own logger, then every existing logger routed to it by configuration. */
+        private List<ch.qos.logback.classic.Logger> channelLoggers(String channel, LogchiSettings.Sink sink) {
+            List<ch.qos.logback.classic.Logger> loggers = new ArrayList<>();
+            loggers.add(context.getLogger(Channels.PREFIX + channel));
+            for (String name : sink.getLoggers()) {
+                if (name != null && !name.isBlank()) {
+                    loggers.add(context.getLogger(name.trim()));
+                }
+            }
+            return loggers;
         }
 
         private Format formatOf(LogchiSettings.Sink sink) {
@@ -291,12 +434,12 @@ public final class LogchiInstaller {
             return sink.getAsync() != null ? sink.getAsync() : settings.getFile().getAsync().isEnabled();
         }
 
-        private void attachSink(ch.qos.logback.classic.Logger logger, String stem, Format format, boolean async,
-                                Level onlyLevel) {
+        private Appender<ILoggingEvent> attachSink(ch.qos.logback.classic.Logger logger, String stem, Format format,
+                                                   boolean async, Level onlyLevel) {
             LogchiSettings.File file = settings.getFile();
             LogchiFileAppender fileAppender = new LogchiFileAppender(dir, names, stem, instance,
                     file.getRotation().getPeriod(), Parse.bytes(file.getRotation().getMaxSize()),
-                    encoder(format, false), guard);
+                    encoder(format, false), guard, modes);
             fileAppender.setContext(context);
             fileAppender.setName("logchi-file-" + stem);
             fileAppender.start();
@@ -314,6 +457,7 @@ public final class LogchiInstaller {
             }
             logger.addAppender(attached);
             record(logger, attached);
+            return attached;
         }
 
         private Appender<ILoggingEvent> wrapAsync(Appender<ILoggingEvent> target, String stem) {
@@ -333,9 +477,19 @@ public final class LogchiInstaller {
         private void record(ch.qos.logback.classic.Logger logger, Appender<ILoggingEvent> appender) {
             Attachment attachment = new Attachment(logger, appender);
             attachments.add(attachment);
-            if (sentinel == null) {
-                sentinel = attachment;
-            }
+        }
+
+        /**
+         * Puts fresh appenders in place first and stops the old ones afterwards, off this thread. Stopping
+         * flushes queues, which can take seconds under load, and until the new appenders are attached every
+         * line goes to the wrong place or nowhere.
+         */
+        private void repair() {
+            List<Attachment> old = new ArrayList<>(attachments);
+            old.forEach(attachment -> attachment.logger().detachAppender(attachment.appender()));
+            forget();
+            attach();
+            scheduler.execute(() -> old.forEach(attachment -> attachment.appender().stop()));
         }
 
         private void detach() {
@@ -343,16 +497,22 @@ public final class LogchiInstaller {
                 attachment.logger().detachAppender(attachment.appender());
                 attachment.appender().stop();
             }
+            forget();
+        }
+
+        private void forget() {
             attachments.clear();
+            routed.forEach(ch.qos.logback.classic.Logger::setAdditive);
+            routed.clear();
             asyncAppenders.clear();
             fileAppenders.clear();
-            sentinel = null;
+            expectedAdditive.clear();
         }
 
         private Encoder<ILoggingEvent> encoder(Format format, boolean color) {
             Encoder<ILoggingEvent> encoder = format == Format.JSON
                     ? new JsonEncoder(settings.getFile().getJsonFlavor(), masker, settings.getStackTraceLines(), appName, instance)
-                    : new TextEncoder(masker, settings.getStackTraceLines(), color);
+                    : new TextEncoder(masker, settings.getStackTraceLines(), color, settings.getMultilineLoggers());
             encoder.setContext(context);
             encoder.start();
             return encoder;

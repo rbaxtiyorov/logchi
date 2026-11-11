@@ -132,4 +132,127 @@ class EncodersTest {
         assertEquals("hi", compact.get("msg").asText());
         assertTrue(compact.get("ts").isNumber());
     }
+
+    @Test
+    void chosenLoggersKeepLineBreaksAndIndentThem() {
+        LoggingEvent e = event(Level.INFO, "REQ\nbody line\r\n2026-11-10 ERROR forged", null);
+        String out = new String(new TextEncoder(masker, 30, false, java.util.List.of("com.example")).encode(e),
+                StandardCharsets.UTF_8);
+        assertTrue(out.endsWith(" : REQ\n\tbody line\n\t2026-11-10 ERROR forged\n"), out);
+        for (String line : out.split("\n")) {
+            assertTrue(line.startsWith("20") && line.contains(" INFO ") || line.startsWith("\t"),
+                    "every continuation line is indented: " + line);
+        }
+    }
+
+    @Test
+    void otherLoggersStillGetOneLine() {
+        LoggingEvent e = event(Level.INFO, "a\nb", null);
+        String out = new String(new TextEncoder(masker, 30, false, java.util.List.of("com.other", "com.exam")).encode(e),
+                StandardCharsets.UTF_8);
+        assertTrue(out.endsWith(" : a\\nb\n"), out);
+    }
+
+    @Test
+    void masksInsideMultiLineMessages() {
+        LoggingEvent e = event(Level.INFO, "RES\n{\"refreshToken\":\"abc\"}", null);
+        String out = new String(new TextEncoder(masker, 30, false, java.util.List.of("com.example.OrderService"))
+                .encode(e), StandardCharsets.UTF_8);
+        assertTrue(out.contains("\n\t{\"refreshToken\":\"***\"}"), out);
+    }
+
+    /** An exception message is as untrusted as a log message: a database error can quote user input. */
+    @Test
+    void exceptionMessagesCannotForgeLines() {
+        Throwable t = new IllegalStateException("bad input\n2026-11-11 10:00:00.000 INFO  [main] forged\r\nmore");
+        String out = text(event(Level.ERROR, "failed", t));
+        String[] lines = out.split("\n");
+        assertTrue(lines[1].startsWith("java.lang.IllegalStateException: bad input"), out);
+        assertEquals("\t2026-11-11 10:00:00.000 INFO  [main] forged", lines[2]);
+        assertEquals("\tmore", lines[3]);
+        for (int i = 2; i < lines.length; i++) {
+            assertTrue(lines[i].startsWith("\t") || lines[i].startsWith("Caused by: "), lines[i]);
+        }
+    }
+
+    @Test
+    void timestampsCarryTheirOffset() {
+        String line = text(event(Level.INFO, "x", null));
+        assertTrue(line.matches("(?s)\\d{4}-\\d{2}-\\d{2} \\d{2}:\\d{2}:\\d{2}\\.\\d{3}(Z|[+-]\\d{2}:\\d{2}) INFO .*"), line);
+    }
+
+    /** Whatever breaks while rendering, the log call returns and the writer thread lives. */
+    @Test
+    void aFailureWhileRenderingBecomesAMarkerLine() {
+        LoggingEvent e = event(Level.WARN, "secret stuff", null);
+        TextEncoder real = new TextEncoder(masker, 30, false);
+        LogchiEncoder broken = new LogchiEncoder(masker, 30) {
+            @Override
+            String render(ch.qos.logback.classic.spi.ILoggingEvent event) {
+                throw new StackOverflowError();
+            }
+
+            @Override
+            String fallback(ch.qos.logback.classic.spi.ILoggingEvent event, Throwable failure) {
+                return real.fallback(event, failure);
+            }
+        };
+        String out = new String(broken.encode(e), StandardCharsets.UTF_8);
+        assertTrue(out.endsWith("com.example.OrderService : [logchi could not render this event: StackOverflowError]\n"), out);
+        assertFalse(out.contains("secret stuff"));
+    }
+
+    @Test
+    void threadNamesCannotForgeLines() {
+        LoggingEvent e = new LoggingEvent("fqcn", context.getLogger("com.example.OrderService"), Level.INFO, "x",
+                null, null);
+        e.setThreadName("job\n2026-11-11 10:00:00.000 INFO  [main] forged");
+        String out = text(e);
+        assertEquals(1, out.split("\n").length, out);
+        assertTrue(out.contains("[job\\n2026-11-11 10:00:00.000 INFO  [main] forged]"), out);
+    }
+
+    /** The message is masked once however many sinks render the event, and never with another masker's rules. */
+    @Test
+    void sinksShareOneMaskedMessageButNotAcrossMaskers() {
+        LoggingEvent e = event(Level.INFO, "login password=hunter2 ok\nnext", null);
+        TextEncoder main = new TextEncoder(masker, 30, false);
+        TextEncoder error = new TextEncoder(masker, 30, false);
+        TextEncoder multi = new TextEncoder(masker, 30, false, java.util.List.of("com.example"));
+        TextEncoder unmasked = new TextEncoder(Masker.NONE, 30, false);
+        String first = new String(main.encode(e), StandardCharsets.UTF_8);
+        assertEquals(first, new String(error.encode(e), StandardCharsets.UTF_8));
+        assertTrue(first.endsWith(" : login password=*** ok\\nnext\n"), first);
+        assertTrue(new String(multi.encode(e), StandardCharsets.UTF_8).endsWith(" : login password=*** ok\n\tnext\n"));
+        assertTrue(new String(unmasked.encode(e), StandardCharsets.UTF_8).contains("hunter2"));
+        assertFalse(new String(main.encode(e), StandardCharsets.UTF_8).contains("hunter2"));
+    }
+
+    @Test
+    void jsonStaysValidUnderConcurrentUse() throws Exception {
+        JsonEncoder encoder = new JsonEncoder(JsonFlavor.ECS, masker, 30, "orders", "pod-1");
+        java.util.concurrent.ExecutorService pool = java.util.concurrent.Executors.newFixedThreadPool(8);
+        java.util.List<java.util.concurrent.Future<Integer>> results = new java.util.ArrayList<>();
+        for (int t = 0; t < 8; t++) {
+            int thread = t;
+            results.add(pool.submit(() -> {
+                int bad = 0;
+                for (int i = 0; i < 2_000; i++) {
+                    LoggingEvent e = event(Level.INFO, "order " + thread + "-" + i + " \"quoted\"\npassword=p" + i, null);
+                    e.addKeyValuePair(new KeyValuePair("n", i));
+                    JsonNode node = JSON.readTree(new String(encoder.encode(e), StandardCharsets.UTF_8));
+                    if (!node.get("message").asText().equals("order " + thread + "-" + i + " \"quoted\"\npassword=***")) {
+                        bad++;
+                    }
+                }
+                return bad;
+            }));
+        }
+        int bad = 0;
+        for (java.util.concurrent.Future<Integer> result : results) {
+            bad += result.get();
+        }
+        pool.shutdown();
+        assertEquals(0, bad);
+    }
 }

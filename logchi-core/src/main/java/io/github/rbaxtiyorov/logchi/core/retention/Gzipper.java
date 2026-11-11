@@ -1,5 +1,6 @@
 package io.github.rbaxtiyorov.logchi.core.retention;
 
+import io.github.rbaxtiyorov.logchi.core.appender.FileModes;
 import io.github.rbaxtiyorov.logchi.core.appender.FileNames;
 import io.github.rbaxtiyorov.logchi.core.instance.InstanceId;
 
@@ -24,9 +25,11 @@ final class Gzipper {
     static final String TMP_SUFFIX = ".tmp";
 
     private final int level;
+    private final FileModes modes;
 
-    Gzipper(int level) {
+    Gzipper(int level, FileModes modes) {
         this.level = level;
+        this.modes = modes;
     }
 
     void compress(Path source) throws IOException {
@@ -38,6 +41,7 @@ final class Gzipper {
         }
         FileTime modified = Files.getLastModifiedTime(source);
         Path tmp = target.resolveSibling(target.getFileName() + "." + InstanceId.pid() + TMP_SUFFIX);
+        Files.deleteIfExists(tmp);
         try (FileChannel channel = FileChannel.open(tmp, StandardOpenOption.CREATE, StandardOpenOption.WRITE,
                 StandardOpenOption.TRUNCATE_EXISTING)) {
             OutputStream raw = Channels.newOutputStream(channel);
@@ -51,6 +55,7 @@ final class Gzipper {
             throw e;
         }
         // Keeping the original time means TTLs count from the last write, not from compression.
+        modes.applyToFile(tmp);
         Files.setLastModifiedTime(tmp, modified);
         try {
             Files.move(tmp, target, StandardCopyOption.ATOMIC_MOVE);

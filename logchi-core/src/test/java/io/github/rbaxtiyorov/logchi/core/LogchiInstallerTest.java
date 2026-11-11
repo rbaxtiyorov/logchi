@@ -248,4 +248,271 @@ class LogchiInstallerTest {
         assertEquals(0, Parse.bytes("0"));
         assertEquals("1.5KB", Parse.humanBytes(1536));
     }
+
+    @Test
+    void compressLevelIsCheckedAtStartup() {
+        LogchiSettings s = settings();
+        s.getFile().getRetention().setCompressLevel(10);
+        IllegalArgumentException e = assertThrows(IllegalArgumentException.class,
+                () -> LogchiInstaller.install(context, s));
+        assertTrue(e.getMessage().contains("compress-level"), e.getMessage());
+    }
+
+    @Test
+    void withoutFilesTheFolderIsNotTouched() {
+        LogchiSettings s = settings();
+        s.setDir(dir.resolve("never").toString());
+        s.getFile().setEnabled(false);
+        s.getConsole().setEnabled(true);
+        LogchiInstaller.install(context, s);
+        logger.info("console only");
+        LogchiInstaller.uninstall();
+        assertFalse(Files.exists(dir.resolve("never")), "no .logchi folder without files");
+    }
+
+    @Test
+    void existingLoggersCanBeRoutedToAChannel() throws IOException {
+        LogchiSettings s = settings();
+        LogchiSettings.Sink http = new LogchiSettings.Sink();
+        http.setAsync(false);
+        http.setLoggers(List.of("com.example.web.HttpLoggingFilter"));
+        s.getChannels().put("http", http);
+        LogchiInstaller.install(context, s);
+        context.getLogger("com.example.web.HttpLoggingFilter").info("REQ GET /orders");
+        context.getLogger("com.example.web.Other").info("unrelated");
+        LogchiInstaller.uninstall();
+        assertTrue(read("orders-http.pod-1.txt").contains("REQ GET /orders"));
+        assertFalse(read("orders-http.pod-1.txt").contains("unrelated"));
+        assertFalse(read("orders.pod-1.txt").contains("REQ GET /orders"), "not additive by default");
+        assertTrue(read("orders.pod-1.txt").contains("unrelated"));
+        assertTrue(context.getLogger("com.example.web.HttpLoggingFilter").isAdditive(), "restored on uninstall");
+    }
+
+    @Test
+    void aChannelCanAlsoPrintToTheConsole() {
+        LogchiSettings s = settings();
+        s.getConsole().setEnabled(true);
+        LogchiSettings.Sink http = new LogchiSettings.Sink();
+        http.setConsole(true);
+        http.setLoggers(List.of("com.example.web.HttpLoggingFilter"));
+        s.getChannels().put("http", http);
+        LogchiInstaller.install(context, s);
+        assertNotNull(context.getLogger("com.example.web.HttpLoggingFilter").getAppender("logchi-console"));
+        assertNotNull(context.getLogger(Channels.PREFIX + "http").getAppender("logchi-console"));
+        assertFalse(context.getLogger("com.example.web.HttpLoggingFilter").isAdditive());
+    }
+
+    @Test
+    void multiLineLoggersReachTheFileWithTheirLineBreaks() throws IOException {
+        LogchiSettings s = settings();
+        s.getFile().getAsync().setEnabled(false);
+        s.setMultilineLoggers(List.of("com.example.Service"));
+        LogchiInstaller.install(context, s);
+        logger.info("REQ\nbody");
+        LogchiInstaller.uninstall();
+        assertTrue(read("orders.pod-1.txt").contains(" : REQ\n\tbody\n"), read("orders.pod-1.txt"));
+    }
+
+    @Test
+    void filePermissionsAreApplied() throws IOException {
+        org.junit.jupiter.api.Assumptions.assumeTrue(
+                java.nio.file.FileSystems.getDefault().supportedFileAttributeViews().contains("posix"));
+        LogchiSettings s = settings();
+        s.setDir(dir.resolve("private").toString());
+        s.getFile().getAsync().setEnabled(false);
+        s.getFile().setPermissions("640");
+        LogchiInstaller.install(context, s);
+        logger.info("x");
+        LogchiInstaller.uninstall();
+        assertEquals("rw-r-----", java.nio.file.attribute.PosixFilePermissions.toString(
+                Files.getPosixFilePermissions(dir.resolve("private/orders.pod-1.txt"))));
+        assertEquals("rwxr-x---", java.nio.file.attribute.PosixFilePermissions.toString(
+                Files.getPosixFilePermissions(dir.resolve("private"))));
+    }
+
+    @Test
+    void badFilePermissionsFailWithAClearMessage() {
+        LogchiSettings s = settings();
+        s.getFile().setPermissions("999");
+        IllegalArgumentException e = assertThrows(IllegalArgumentException.class,
+                () -> LogchiInstaller.install(context, s));
+        assertTrue(e.getMessage().contains("999"), e.getMessage());
+    }
+
+    /** With files off the channel still owns its console lines, or each would print twice. */
+    @Test
+    void routedLoggersPrintOnceWhenFilesAreOff() {
+        LogchiSettings s = settings();
+        s.getFile().setEnabled(false);
+        s.getConsole().setEnabled(true);
+        LogchiSettings.Sink http = new LogchiSettings.Sink();
+        http.setConsole(true);
+        http.setLoggers(List.of("com.example.web.HttpLoggingFilter"));
+        s.getChannels().put("http", http);
+        LogchiInstaller.install(context, s);
+        Logger routed = context.getLogger("com.example.web.HttpLoggingFilter");
+        assertNotNull(routed.getAppender("logchi-console"));
+        assertFalse(routed.isAdditive(), "otherwise the root console prints the line again");
+    }
+
+    @Test
+    void additivityTheApplicationSetIsPutBack() {
+        Logger own = context.getLogger("com.example.web.HttpLoggingFilter");
+        own.setAdditive(false);
+        LogchiSettings s = settings();
+        LogchiSettings.Sink http = new LogchiSettings.Sink();
+        http.setAdditive(true);
+        http.setLoggers(List.of("com.example.web.HttpLoggingFilter"));
+        s.getChannels().put("http", http);
+        LogchiInstaller.install(context, s);
+        assertTrue(own.isAdditive());
+        LogchiInstaller.uninstall();
+        assertFalse(own.isAdditive());
+    }
+
+    @Test
+    void aChannelCannotShareAFileWithALevel() {
+        LogchiSettings s = settings();
+        s.getChannels().put("error", new LogchiSettings.Sink());
+        IllegalArgumentException e = assertThrows(IllegalArgumentException.class,
+                () -> LogchiInstaller.install(context, s));
+        assertTrue(e.getMessage().contains("Channel 'error'"), e.getMessage());
+    }
+
+    /** YAML reads an unquoted 0640 as the number 416, which must not become a file mode. */
+    @Test
+    void permissionsThatLockTheOwnerOutAreRejected() {
+        for (String bad : List.of("416", "000", "044")) {
+            LogchiSettings s = settings();
+            s.getFile().setPermissions(bad);
+            IllegalArgumentException e = assertThrows(IllegalArgumentException.class,
+                    () -> LogchiInstaller.install(context, s), bad);
+            assertTrue(e.getMessage().contains("quotes"), e.getMessage());
+        }
+        LogchiSettings ok = settings();
+        ok.getFile().setPermissions("0640");
+        LogchiInstaller.install(context, ok);
+    }
+
+    /** A reset walks the loggers one by one, so repairing the root logger alone is not enough. */
+    @Test
+    void routingSurvivesALogbackReset() throws Exception {
+        LogchiSettings s = settings();
+        LogchiSettings.Sink http = new LogchiSettings.Sink();
+        http.setAsync(false);
+        http.setLoggers(List.of("com.example.web.HttpLoggingFilter"));
+        s.getChannels().put("http", http);
+        LogchiInstaller.install(context, s);
+        Logger routed = context.getLogger("com.example.web.HttpLoggingFilter");
+        routed.info("before");
+
+        // What a reset that overlaps the watchdog leaves behind: the root repaired, this logger undone.
+        routed.detachAndStopAllAppenders();
+        routed.setAdditive(true);
+        await(() -> !routed.isAdditive() && routed.getAppender("logchi-file-orders-http") != null
+                && routed.getAppender("logchi-file-orders-http").isStarted());
+        routed.info("after");
+
+        context.reset();
+        context.getLogger(Logger.ROOT_LOGGER_NAME).setLevel(Level.INFO);
+        await(() -> !routed.isAdditive() && routed.getAppender("logchi-file-orders-http") != null
+                && routed.getAppender("logchi-file-orders-http").isStarted());
+        routed.info("after reset");
+        LogchiInstaller.uninstall();
+
+        String http1 = read("orders-http.pod-1.txt");
+        assertTrue(http1.contains("before") && http1.contains(" : after\n") && http1.contains("after reset"), http1);
+        assertFalse(Files.exists(dir.resolve("orders.pod-1.txt")) && read("orders.pod-1.txt").contains("after"));
+    }
+
+    @Test
+    void anAsyncQueueThatCannotWorkStopsStartup() {
+        LogchiSettings s = settings();
+        s.getFile().getAsync().setQueueSize(0);
+        IllegalArgumentException e = assertThrows(IllegalArgumentException.class,
+                () -> LogchiInstaller.install(context, s));
+        assertTrue(e.getMessage().contains("queue-size"), e.getMessage());
+    }
+
+    @Test
+    void dropBelowAcceptsOnlyLevelsThatMayBeDropped() {
+        for (String bad : List.of("WARN", "whenever", "")) {
+            LogchiSettings s = settings();
+            s.getFile().getAsync().setDropBelow(bad);
+            IllegalArgumentException e = assertThrows(IllegalArgumentException.class,
+                    () -> LogchiInstaller.install(context, s), bad);
+            assertTrue(e.getMessage().contains("drop-below"), e.getMessage());
+        }
+    }
+
+    /** Otherwise every later installation in this process finds its own id taken and adds the pid. */
+    @Test
+    void aRefusedConfigurationLeavesNoLockBehind() {
+        for (java.util.function.Consumer<LogchiSettings> mistake : List.<java.util.function.Consumer<LogchiSettings>>of(
+                s -> s.getFile().getRetention().setHot("-5s"),
+                s -> s.getFile().getRetention().setCheckInterval("often"),
+                s -> s.getFile().getAsync().setFlushTimeout("soon"),
+                s -> s.getChannels().put("error", new LogchiSettings.Sink()))) {
+            LogchiSettings bad = settings();
+            mistake.accept(bad);
+            assertThrows(IllegalArgumentException.class, () -> LogchiInstaller.install(context, bad));
+        }
+        LogchiInstaller.install(context, settings());
+        assertTrue(LogchiInstaller.summary().orElseThrow().contains("instance=pod-1 "),
+                LogchiInstaller.summary().orElseThrow());
+    }
+
+    /** The error file is where people look for errors, whichever logger wrote them. */
+    @Test
+    void errorsFromAChannelAlsoReachTheErrorFile() throws IOException {
+        LogchiSettings s = settings();
+        LogchiSettings.Sink http = new LogchiSettings.Sink();
+        http.setAsync(false);
+        http.setLoggers(List.of("com.example.web.HttpLoggingFilter"));
+        s.getChannels().put("http", http);
+        LogchiInstaller.install(context, s);
+        context.getLogger("com.example.web.HttpLoggingFilter").error("upstream failed");
+        context.getLogger("com.example.web.HttpLoggingFilter").info("routine");
+        LogchiInstaller.uninstall();
+        assertTrue(read("orders-http.pod-1.txt").contains("upstream failed"));
+        assertTrue(read("orders-error.pod-1.txt").contains("upstream failed"));
+        assertFalse(read("orders-error.pod-1.txt").contains("routine"));
+        assertFalse(Files.exists(dir.resolve("orders.pod-1.txt")), "still kept out of the main file");
+    }
+
+    @Test
+    void anUnusableLockFolderIsReportedOnce() throws IOException {
+        org.junit.jupiter.api.Assumptions.assumeTrue(
+                java.nio.file.FileSystems.getDefault().supportedFileAttributeViews().contains("posix"));
+        Path locks = Files.createDirectories(dir.resolve(".logchi"));
+        Files.setPosixFilePermissions(locks, java.nio.file.attribute.PosixFilePermissions.fromString("r-xr-xr-x"));
+        java.io.PrintStream original = System.err;
+        java.io.ByteArrayOutputStream captured = new java.io.ByteArrayOutputStream();
+        System.setErr(new java.io.PrintStream(captured, true));
+        try {
+            LogchiInstaller.install(context, settings());
+            logger.info("still logging");
+            LogchiInstaller.uninstall();
+        } finally {
+            System.setErr(original);
+            Files.setPosixFilePermissions(locks, java.nio.file.attribute.PosixFilePermissions.fromString("rwxr-xr-x"));
+        }
+        long lines = captured.toString().lines().filter(line -> line.contains("cannot lock instance")).count();
+        assertEquals(1, lines, captured.toString());
+        assertTrue(files().stream().anyMatch(name -> name.matches("orders\\.pod-1-\\d+\\.txt")), files().toString());
+    }
+
+    @Test
+    void lockFilesGetTheConfiguredPermissions() throws IOException {
+        org.junit.jupiter.api.Assumptions.assumeTrue(
+                java.nio.file.FileSystems.getDefault().supportedFileAttributeViews().contains("posix"));
+        LogchiSettings s = settings();
+        s.getFile().setPermissions("600");
+        LogchiInstaller.install(context, s);
+        logger.info("x");
+        assertEquals("rwx------", java.nio.file.attribute.PosixFilePermissions.toString(
+                Files.getPosixFilePermissions(dir.resolve(".logchi"))));
+        assertEquals("rw-------", java.nio.file.attribute.PosixFilePermissions.toString(
+                Files.getPosixFilePermissions(dir.resolve(".logchi/orders.pod-1.lock"))));
+    }
 }

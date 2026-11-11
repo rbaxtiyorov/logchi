@@ -27,7 +27,8 @@ final class ThrowableRenderer {
         }
         sb.append(prefix).append(t.getClassName());
         if (t.getMessage() != null) {
-            sb.append(": ").append(t.getMessage());
+            // Continuation lines are indented like stack frames, so message text never starts a line.
+            sb.append(": ").append(t.getMessage().replace("\r\n", "\n").replace('\r', '\n').replace("\n", "\n\t"));
         }
         sb.append('\n');
 

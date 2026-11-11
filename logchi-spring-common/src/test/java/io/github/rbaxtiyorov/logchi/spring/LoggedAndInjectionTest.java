@@ -30,6 +30,7 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 class LoggedAndInjectionTest {
 
     private final ApplicationContextRunner runner = new ApplicationContextRunner()
+            .withInitializer(new LogchiContextInitializer())
             .withConfiguration(AutoConfigurations.of(LogchiAutoConfiguration.class))
             .withUserConfiguration(Beans.class);
 
@@ -230,8 +231,28 @@ class LoggedAndInjectionTest {
     @Test
     void wholeLibraryCanBeTurnedOff() {
         runner.withPropertyValues("logchi.enabled=false").run(context -> {
-            assertFalse(context.containsBean("logchiLogInjector"));
-            assertNull(context.getBean(Service.class).injected());
+            assertFalse(context.containsBean("logchiLoggedAdvisor"));
+            assertFalse(context.containsBean("logchiStartupBanner"));
+            assertFalse(AopUtils.isAopProxy(context.getBean(Service.class)));
+        });
+    }
+
+    /** Otherwise switching logchi off would turn every log call on such a field into a NullPointerException. */
+    @Test
+    void logFieldsAreInjectedEvenWhenTheLibraryIsOff() {
+        runner.withPropertyValues("logchi.enabled=false").run(context ->
+                assertSame(logger, context.getBean(Service.class).injected()));
+    }
+
+    @Test
+    void aMisspelledLevelStopsStartup() {
+        runner.withPropertyValues("logchi.logged.level=LOUD").run(context -> {
+            assertNotNull(context.getStartupFailure());
+            Throwable root = context.getStartupFailure();
+            while (root.getCause() != null) {
+                root = root.getCause();
+            }
+            assertTrue(root.getMessage().contains("logchi.logged.level 'LOUD'"), root.toString());
         });
     }
 
@@ -347,5 +368,13 @@ class LoggedAndInjectionTest {
     static class BadLoggedBeans {
         @Bean
         BadLogged badLogged() { return new BadLogged(); }
+    }
+
+    /** As in a test slice such as @WebMvcTest, where logchi's auto-configuration is not loaded. */
+    @Test
+    void logFieldsAreInjectedWithoutTheAutoConfiguration() {
+        new ApplicationContextRunner().withInitializer(new LogchiContextInitializer())
+                .withUserConfiguration(Beans.class)
+                .run(context -> assertSame(logger, context.getBean(Service.class).injected()));
     }
 }

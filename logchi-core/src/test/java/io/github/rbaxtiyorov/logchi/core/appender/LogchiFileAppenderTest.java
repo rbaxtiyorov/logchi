@@ -230,4 +230,66 @@ class LogchiFileAppenderTest {
         assertTrue(new FileNames("log").parse("app.i1.txt").isEmpty());
         assertEquals(LogchiSettings.Period.DAILY, new LogchiSettings().getFile().getRotation().getPeriod());
     }
+
+    /** A crash or a full disk can leave the last event without its line end. */
+    @Test
+    void startsOnAFreshLineAfterACutOffEvent() throws IOException {
+        long now = millis(LocalDate.of(2026, 11, 8), 10);
+        Path active = dir.resolve("app.i1.txt");
+        Files.writeString(active, "half an eve");
+        Files.setLastModifiedTime(active, java.nio.file.attribute.FileTime.fromMillis(now));
+        start(Period.DAILY, 0, noGuard());
+        log("next", now + 1);
+        appender.stop();
+        List<String> lines = Files.readAllLines(active);
+        assertEquals("half an eve", lines.get(0));
+        assertTrue(lines.get(1).endsWith(" : next"), lines.toString());
+    }
+
+    /** Otherwise a number freed by retention is reused and name order stops being time order. */
+    @Test
+    void rollNumbersKeepCountingAfterOlderFilesAreDeleted() throws IOException {
+        long now = millis(LocalDate.of(2026, 11, 8), 10);
+        start(Period.DAILY, 60, noGuard());
+        for (int i = 0; i < 6; i++) {
+            log("message number " + i + " padding padding padding", now + i);
+        }
+        List<String> before = files();
+        assertTrue(before.contains("app.i1.2026-11-08.3.txt"), before.toString());
+        Files.delete(dir.resolve("app.i1.2026-11-08.0.txt"));
+        Files.delete(dir.resolve("app.i1.2026-11-08.1.txt"));
+        log("message number 6 padding padding padding", now + 6);
+        log("message number 7 padding padding padding", now + 7);
+        appender.stop();
+        List<String> after = files();
+        assertFalse(after.contains("app.i1.2026-11-08.0.txt"), after.toString());
+        assertFalse(after.contains("app.i1.2026-11-08.1.txt"), after.toString());
+    }
+
+    /** Without this, lines keep going to a deleted file that nobody can read. */
+    @Test
+    void recreatesTheFileWhenSomeoneRemovesIt() throws IOException {
+        long now = millis(LocalDate.of(2026, 11, 8), 10);
+        start(Period.DAILY, 0, noGuard());
+        log("before", now);
+        Files.delete(dir.resolve("app.i1.txt"));
+        log("after", now + 1_500);
+        appender.stop();
+        assertTrue(Files.readString(dir.resolve("app.i1.txt")).contains("after"));
+    }
+
+    /** As after logrotate or a restore: same name, different file. */
+    @Test
+    void noticesWhenTheFileIsReplaced() throws IOException {
+        long now = millis(LocalDate.of(2026, 11, 8), 10);
+        start(Period.DAILY, 0, noGuard());
+        log("before", now);
+        Path active = dir.resolve("app.i1.txt");
+        Files.move(active, dir.resolve("moved-away.txt"));
+        Files.writeString(active, "");
+        log("after", now + 1_500);
+        log("and more", now + 1_600);
+        appender.stop();
+        assertTrue(Files.readString(active).contains("and more"), Files.readString(active));
+    }
 }

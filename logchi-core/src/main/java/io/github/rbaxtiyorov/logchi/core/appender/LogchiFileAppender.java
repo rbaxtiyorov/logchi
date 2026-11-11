@@ -47,6 +47,7 @@ public final class LogchiFileAppender extends UnsynchronizedAppenderBase<ILoggin
     private final long maxSize;
     private final Encoder<ILoggingEvent> encoder;
     private final DiskGuard guard;
+    private final FileModes modes;
 
     private OutputStream out;
     private long size;
@@ -54,9 +55,19 @@ public final class LogchiFileAppender extends UnsynchronizedAppenderBase<ILoggin
     private long periodEnd;
     private long retryAt;
     private boolean failureReported;
+    private long checkedAt;
+    private Object fileKey;
+    private int failures;
+    private final java.util.Map<String, Integer> nextIndex = new java.util.HashMap<>();
 
     public LogchiFileAppender(Path dir, FileNames names, String stem, String instance, Period period, long maxSize,
                               Encoder<ILoggingEvent> encoder, DiskGuard guard) {
+        this(dir, names, stem, instance, period, maxSize, encoder, guard, FileModes.DEFAULT);
+    }
+
+    public LogchiFileAppender(Path dir, FileNames names, String stem, String instance, Period period, long maxSize,
+                              Encoder<ILoggingEvent> encoder, DiskGuard guard, FileModes modes) {
+        this.modes = modes;
         this.dir = dir;
         this.names = names;
         this.stem = stem;
@@ -109,10 +120,28 @@ public final class LogchiFileAppender extends UnsynchronizedAppenderBase<ILoggin
 
     private void write(byte[] bytes, long timestamp) {
         try {
+            if (out != null && timestamp - checkedAt >= 1_000) {
+                checkedAt = timestamp;
+                // Someone removed or replaced the file under us. Writing on would go to a file nobody can read.
+                if (!sameFile(dir.resolve(names.active(stem, instance)))) {
+                    lost.incrementAndGet();
+                    closeQuietly();
+                    System.err.println("logchi: " + names.active(stem, instance) + " in " + dir
+                            + " was removed or replaced, reopening it");
+                }
+            }
             if (out == null) {
                 if (System.currentTimeMillis() < retryAt) {
                     lost.incrementAndGet();
                     return;
+                }
+                if (failures >= 3) {
+                    // The file itself may be the problem, as when it hit a size limit. Set it aside.
+                    failures = 0;
+                    Path active = dir.resolve(names.active(stem, instance));
+                    if (Files.exists(active) && Files.size(active) > 0) {
+                        move(active, keyOf(timestamp));
+                    }
                 }
                 open(timestamp);
             }
@@ -122,13 +151,17 @@ public final class LogchiFileAppender extends UnsynchronizedAppenderBase<ILoggin
             out.write(bytes);
             size += bytes.length;
             failureReported = false;
+            failures = 0;
         } catch (IOException | RuntimeException e) {
             fail(e);
         }
     }
 
     private void open(long now) throws IOException {
-        Files.createDirectories(dir);
+        if (!Files.isDirectory(dir)) {
+            Files.createDirectories(dir);
+            modes.applyToDirectory(dir);
+        }
         Path active = dir.resolve(names.active(stem, instance));
         // A file left by an earlier run is rolled under the period it was actually written in.
         if (period != Period.NONE && Files.exists(active) && Files.size(active) > 0) {
@@ -137,8 +170,19 @@ public final class LogchiFileAppender extends UnsynchronizedAppenderBase<ILoggin
                 move(active, existingKey);
             }
         }
+        boolean created = !Files.exists(active);
         out = new FileOutputStream(active.toFile(), true);
+        if (created) {
+            modes.applyToFile(active);
+        }
         size = Files.size(active);
+        fileKey = keyOfFile(active);
+        checkedAt = now;
+        if (size > 0 && !endsWithNewline(active, size)) {
+            // A crash or a full disk cut the last event short. The next one must start on its own line.
+            out.write('\n');
+            size++;
+        }
         periodKey = keyOf(now);
         periodEnd = endOf(now);
     }
@@ -151,11 +195,15 @@ public final class LogchiFileAppender extends UnsynchronizedAppenderBase<ILoggin
     }
 
     private void move(Path active, String key) throws IOException {
-        int index = 0;
+        // Continue after the highest number in use. Reusing a number freed by retention would put a newer
+        // file before older ones when they are read in name order.
+        int index = nextIndex.computeIfAbsent(key, this::firstFreeIndex);
         Path target;
         do {
             target = dir.resolve(names.rolled(stem, instance, key, index++));
         } while (Files.exists(target) || Files.exists(target.resolveSibling(target.getFileName() + FileNames.GZ)));
+        nextIndex.clear();
+        nextIndex.put(key, index);
         try {
             Files.move(active, target, StandardCopyOption.ATOMIC_MOVE);
         } catch (AtomicMoveNotSupportedException e) {
@@ -163,8 +211,56 @@ public final class LogchiFileAppender extends UnsynchronizedAppenderBase<ILoggin
         }
     }
 
+    private static Object keyOfFile(Path file) {
+        try {
+            return Files.readAttributes(file, java.nio.file.attribute.BasicFileAttributes.class).fileKey();
+        } catch (IOException e) {
+            return null;
+        }
+    }
+
+    private boolean sameFile(Path active) {
+        if (!Files.exists(active)) {
+            return false;
+        }
+        Object current = keyOfFile(active);
+        return fileKey == null || current == null || fileKey.equals(current);
+    }
+
+    private int firstFreeIndex(String key) {
+        String prefix = stem + "." + instance + "." + key + ".";
+        int highest = -1;
+        try (java.util.stream.Stream<Path> files = Files.list(dir)) {
+            for (Path path : files.toList()) {
+                String file = path.getFileName().toString();
+                if (file.startsWith(prefix)) {
+                    int dot = file.indexOf('.', prefix.length());
+                    try {
+                        highest = Math.max(highest, Integer.parseInt(file.substring(prefix.length(), dot)));
+                    } catch (RuntimeException notOurs) {
+                        // A file that only looks similar.
+                    }
+                }
+            }
+        } catch (IOException e) {
+            return 0;
+        }
+        return highest + 1;
+    }
+
+    private static boolean endsWithNewline(Path file, long size) {
+        try (java.nio.channels.SeekableByteChannel channel = Files.newByteChannel(file)) {
+            java.nio.ByteBuffer last = java.nio.ByteBuffer.allocate(1);
+            channel.position(size - 1);
+            return channel.read(last) == 1 && last.get(0) == '\n';
+        } catch (IOException e) {
+            return true;
+        }
+    }
+
     private void fail(Exception e) {
         lost.incrementAndGet();
+        failures++;
         closeQuietly();
         retryAt = System.currentTimeMillis() + RETRY_MILLIS;
         if (!failureReported) {

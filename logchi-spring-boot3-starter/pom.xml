@@ -7,7 +7,7 @@
     <parent>
         <groupId>io.github.rbaxtiyorov</groupId>
         <artifactId>logchi-parent</artifactId>
-        <version>0.1.0</version>
+        <version>0.1.1</version>
     </parent>
 
     <artifactId>logchi-spring-boot3-starter</artifactId>
@@ -66,6 +66,22 @@
         <dependency>
             <groupId>org.springframework.boot</groupId>
             <artifactId>spring-boot-starter-test</artifactId>
+            <scope>test</scope>
+        </dependency>
+        <!-- A real secured server, to prove the request context works with Spring Security. -->
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-web</artifactId>
+            <scope>test</scope>
+        </dependency>
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-security</artifactId>
+            <scope>test</scope>
+        </dependency>
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-oauth2-resource-server</artifactId>
             <scope>test</scope>
         </dependency>
     </dependencies>

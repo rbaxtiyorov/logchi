@@ -28,6 +28,7 @@ logchi:
   app-name: ${spring.application.name}
   instance-id:                     # empty: host or pod name
   stack-trace-lines: 30
+  multiline-loggers: []
 
   console:
     enabled: true
@@ -39,6 +40,7 @@ logchi:
     format: text                   # text | json
     json-flavor: ecs               # ecs | logstash | compact
     extension: txt
+    permissions:                   # empty: decided by the system
     rotation:
       period: daily                # hourly | daily | none
       max-size: 100MB
@@ -76,6 +78,7 @@ logchi:
     header: X-Request-Id
     user-id: principal             # principal | header:<name> | none
     extra-headers: []
+    order: -2147483638             # highest precedence + 10
 
   logged:
     enabled: true
@@ -126,10 +129,11 @@ the same.
 | `app-name` | `spring.application.name`, else `app` | First part of every file name |
 | `instance-id` | host or pod name | Second part of every file name, unique per running instance |
 | `stack-trace-lines` | `30` | Most stack frames printed per exception |
+| `multiline-loggers` | `[]` | Loggers whose messages keep their line breaks |
 
 **`enabled: false`** turns everything off: no files, Spring Boot's normal console output, no request context, and
-`@Logged` does nothing. `@Log` fields are not filled in either and stay `null`, so to stop only the files use
-[`file.enabled: false`](#file) instead.
+`@Logged` does nothing. `@Log` fields are still filled in, so your code keeps working. To stop only the files,
+use [`file.enabled: false`](#file) instead.
 
 **`dir`** is resolved against the directory the app was started from, and created if it doesn't exist. If logchi
 can't write there, the app still starts and keeps logging to the console. It prints
@@ -144,10 +148,36 @@ so `orders.api` gives files starting with `orders_api`.
 - Two processes can't share an id in one folder. If the id is already in use by a live process, the later one
   adds its process id, for example `api-7d9f-48213`.
 - Set it yourself when you want a readable, stable name: `instance-id: blue`.
+- **In Docker, set it.** `HOSTNAME` there is the container id, which changes every time the container is
+  recreated. Each deploy would start a new set of files, and the old live file would wait an hour before
+  it is rolled and cleaned up.
+- If logchi can't create its lock file in `<dir>/.logchi`, it can't tell whether the id is free. It then adds
+  the process id to be safe and says so on standard error.
 
 **`stack-trace-lines`** applies to each exception separately. Every `Caused by` and `Suppressed` section gets the
 same allowance, so the root cause is never cut off. Hidden frames are summarized as `... 64 more`. `0` prints
 every frame.
+
+**`multiline-loggers`**: normally a message is always written on one line. Line breaks inside it are written as
+the two characters `\n`, so text that came from a user can never pass for a separate log line. For loggers
+that write multi-line messages on purpose, such as a request logger that draws a box, list them here:
+
+```yaml
+logchi:
+  multiline-loggers:
+    - com.example.web.HttpLoggingFilter
+```
+
+```
+2026-11-10 17:04:59.637+05:00 INFO  [http-nio-8080-exec-2] [tid=cdccedcf8da5674c] c.e.w.HttpLoggingFilter : ┌─ REQ GET /orders
+	│ body: {"item":"book"}
+	└─ 200 OK 12ms
+```
+
+- Every continuation line starts with a tab. A line that starts a new event never does, so forged lines are
+  still easy to tell apart.
+- A name also covers the loggers below it: `com.example.web` covers every class in that package.
+- This applies to text output, on the console and in files. JSON always keeps a message in one field.
 
 ## Console
 
@@ -164,7 +194,13 @@ every frame.
   `NO_COLOR` environment variable is set, or when `TERM` is `dumb`. IDE run windows don't count as terminals, so
   use `always` in your development profile to get colors there.
 
-logchi replaces the console output Spring Boot sets up, so each line prints once.
+logchi replaces the console output Spring Boot sets up, so each line prints once. `logging.pattern.console`
+no longer applies. If something parses your console lines, such as a log shipper's pattern, check it against
+the layout:
+
+```
+<date> <time><offset> <LEVEL> [<thread>] [<context>] <logger> : <message> <key=value ...>
+```
 
 ## File
 
@@ -174,10 +210,18 @@ logchi replaces the console output Spring Boot sets up, so each line prints once
 | `file.format` | `text` | `text`, `json` | Line format in the files |
 | `file.json-flavor` | `ecs` | `ecs`, `logstash`, `compact` | Field names used when the format is `json` |
 | `file.extension` | `txt` | letters and digits | File extension, without the dot |
+| `file.permissions` | none | `"640"`, `rw-r-----` | Who may read the log files |
 
-- **`enabled: false`** leaves only the console. An empty `.logchi` folder is still created inside `dir`.
-- **`extension`**: if you change it, files written with the old extension are no longer cleaned up. Delete them
+- **`enabled: false`** leaves only the console. Nothing is created in `dir`.
+- **`extension`**: characters other than letters, digits, `-` and `_` become `_`. If you change it, files written with the old extension are no longer cleaned up. Delete them
   by hand.
+- **`permissions`**: by default the operating system decides who may read new files, usually everyone on the
+  machine. When logs hold personal data, set `permissions: "640"` (owner and group) or `"600"` (owner only).
+  The log folder gets the matching rights when logchi creates it: `750` for `640`. Existing files keep what
+  they have. It has no effect on Windows.
+  - Write the number in quotes. YAML reads an unquoted `0640` as a different number.
+  - The owner must keep read and write, or startup stops.
+  - In a container, check which group the process runs as before giving the group access.
 
 **JSON flavors.** Each event is one JSON object on one line. The flavor only changes the field names:
 
@@ -207,7 +251,8 @@ Rotation decides when the live file is closed, renamed and replaced by a fresh o
 | `file.rotation.max-size` | `100MB` | a size | Also start a new file when the next line would pass this size |
 
 - Both rules apply together. A busy day produces several files for that day, numbered `0`, `1`, `2`.
-- Days and hours follow the server's time zone.
+- Days and hours follow the server's time zone. Timestamps on each line carry their offset, such as `+05:00`
+  or `Z`.
 - A file is renamed when the first line after the boundary is written, so a quiet app's file changes name with
   its next line.
 - `max-size: 0` turns off rolling by size. `period: none` turns off rolling by time.
@@ -222,7 +267,7 @@ Retention decides what happens to files after they roll. The live file is never 
 | `file.retention.hot` | `1d` | How long a rolled file stays plain text before it is gzipped |
 | `file.retention.cold` | `30d` | How long a rolled file is kept before it is deleted |
 | `file.retention.compress` | `true` | Whether files are gzipped at all |
-| `file.retention.compress-level` | `6` | `1` is fastest, `9` is smallest |
+| `file.retention.compress-level` | `6` | `1` is fastest, `9` is smallest. Other values stop startup |
 | `file.retention.max-total` | `5GB` | Size limit for all of this app's log files in the folder |
 | `file.retention.min-free-disk` | `1GB` | Free disk space below which file logging pauses |
 | `file.retention.scope` | `shared` | Whether this instance also cleans up after other instances |
@@ -261,7 +306,8 @@ the limit, the oldest rolled files are deleted first, whichever level or channel
 - `own`: each instance only touches its own files. Files left by an instance that never comes back stay
   forever, and `max-total` applies to each instance separately.
 
-**`check-interval`** is how often the checks above run. The first run is 5 seconds after startup.
+**`check-interval`** is how often the checks above run. The first run is 5 seconds after startup, and the
+shortest interval is one second.
 
 ### Async writing
 
@@ -278,7 +324,8 @@ By default a log call puts the line on a queue and returns. A background thread 
 - "Nearly full" means less than a fifth of the queue is free. From then on, lines at `drop-below` and lower are
   dropped and counted. Once a minute a warning reports how many.
 - WARN and ERROR are never dropped, whatever `drop-below` says. The calling thread waits for space instead.
-- `drop-below` accepts `TRACE`, `DEBUG` or `INFO`.
+- `drop-below` accepts `TRACE`, `DEBUG` or `INFO`. Anything else stops startup.
+- `queue-size` must be 16 or more.
 - `enabled: false` makes every log call write to disk itself. Nothing is queued or dropped, and callers wait for
   the disk.
 
@@ -331,13 +378,32 @@ Channels.get("audit").info("refund approved orderId={}", id);
 ```
 
 - The file is `<app>-<channel>.<instance>.txt`, for example `orders-audit.api-7d9f.txt`.
-- A channel accepts the same options as a [level](#levels), plus `additive`.
-- **`additive: false`** (the default): the lines go only to the channel's file. They don't appear on the
-  console, in the main file or in level files.
+- A channel accepts the same options as a [level](#levels), plus `additive`, `console` and `loggers`.
+- **`additive: false`** (the default): the lines go to the channel's file and stay off the console and out
+  of the main file.
 - **`additive: true`**: the lines go to the channel's file and everywhere else too.
+- **`console: true`** keeps the lines on the console as well, while still leaving them out of the main file.
+- [Level files](#levels) still receive a channel's lines of that level: an ERROR written to a channel is
+  also in the error file.
+- A channel can't have the name of a level you keep a file for, such as `error`.
 - `Channels.get("x")` for a channel you haven't declared writes to the main log.
 - To change what a channel lets through, set its level like any logger:
   `logging.level.logchi.channel.audit: WARN`.
+
+**Sending an existing logger to a channel.** You don't have to change code to use a channel. `loggers` moves
+everything an existing logger writes into the channel's file:
+
+```yaml
+logchi:
+  channels:
+    http:
+      cold: 7d                 # request bodies are kept a week, everything else longer
+      console: true            # still printed, for whoever watches the console
+      loggers:
+        - com.example.web.HttpLoggingFilter
+```
+
+A name also covers the loggers below it. The lines leave the main file, unless the channel is `additive`.
 
 ## Mask
 
@@ -354,10 +420,12 @@ messages, exception messages, stack traces, attached key-values and request cont
 | `mask.replacement` | `***` | The text written in place of a secret |
 
 **Built-in keys:** `password`, `passwd`, `pwd`, `secret`, `token`, `authorization`, `api-key`, `apikey`,
-`api_key`, `cardnumber`, `card_number`, `cvv`, `cvc`.
+`api_key`, `cardnumber`, `card_number`, `cvv`, `cvc`, `cookie`.
 
 A key matches if it *contains* one of these words, in any letter case. So `accessToken`, `x-auth-token` and
-`clientSecret` are all caught.
+`clientSecret` are all caught. Two exceptions keep useful text readable: a number or `true`/`false` under a
+key that only describes a secret, such as `tokenCount=5`, is kept, and a class name at the start of a message,
+such as `TokenService: refreshed`, is not a key.
 
 | You log | What is written |
 |---|---|
@@ -367,7 +435,11 @@ A key matches if it *contains* one of these words, in any letter case. So `acces
 | `clientSecret: s3cr3t, user: ann` | `clientSecret: ***, user: ann` |
 | `paid with 4242 4242 4242 4242` | `paid with ***` |
 | `.addKeyValue("apiKey", key)` | `apiKey=***` |
+| `{"refreshToken":"eyJhbG` (cut off) | `{"refreshToken":"***"` |
+| `InvalidTokenException: expired` | unchanged: an exception name is not a key |
 | `token is eyJhbGciOi` | `token is eyJhbGciOi` (not masked) |
+
+A secret whose closing quote is missing is masked up to the end of its line.
 
 The last row shows the limit. A value is recognized by the key in front of it, written as `key=value`,
 `key: value` or a JSON field. A secret with no key can't be recognized, so don't log secrets on purpose.
@@ -393,7 +465,8 @@ logchi:
 ```
 
 **`cards`** masks numbers of 14 to 19 digits, with or without spaces or dashes, that pass the card checksum.
-Other long numbers, such as order ids, are left alone.
+About one in ten random numbers of that length passes it by chance. If your logs carry other long numbers,
+such as national id numbers or account numbers, turn this off, or a tenth of them will be masked.
 
 **`use-defaults: false`** keeps only your own `keys`.
 
@@ -414,6 +487,7 @@ INFO  [tid=cdccedcf8da5674c uid=alice tenantId=acme] c.e.OrderService : order cr
 | `context.header` | `X-Request-Id` | Header the id is read from and returned in |
 | `context.user-id` | `principal` | Where the user (`uid`) comes from |
 | `context.extra-headers` | `[]` | Request headers to add to every line |
+| `context.order` | highest precedence + 10 | Where logchi's request filter runs among your filters |
 
 **Request id.** Every response carries the id in the `X-Request-Id` header, so a user or another service can
 quote it.
@@ -422,7 +496,10 @@ quote it.
 - An incoming value is only accepted if it is at most 64 letters, digits, `.`, `_` or `-`. Anything else is
   replaced with a new id.
 - If Micrometer Tracing is on, its trace id is used.
+- If a filter of your own, running before logchi's, already put an id in the response header, logchi uses
+  that id instead of making a second one.
 - The id follows work onto `@Async` threads, unless you define your own `TaskDecorator` bean.
+- A request handled asynchronously by the server keeps its id and user when it continues on another thread.
 
 **`user-id`** has three settings:
 
@@ -433,6 +510,17 @@ quote it.
 | `none` | Not logged |
 
 Only use a header behind a gateway that sets it. Otherwise a caller can put any name there.
+
+The user is known once Spring Security has checked the request. Lines logged before that, and requests that
+are rejected with 401, have no `uid`. From then on it stays until the request ends, so a filter of your own
+that logs after the request was handled, such as a request logger, has it too.
+
+**`order`** is a number: lower runs earlier. logchi's filter must run before any filter of yours that should
+have the request id on its lines. The default puts it ahead of Spring Security and almost everything else. If
+one of your filters uses that same position, give yours a higher number or lower this one.
+
+**When a request fails**, the request id and user are also on the error line the server itself writes
+(`Servlet.service() ... threw exception`).
 
 **`extra-headers`** copies request headers onto every line. The name drops a leading `X-` and becomes camel case:
 
@@ -462,7 +550,7 @@ itself.
 | `logged.slower-than` | none | `slowerThan` | How long a call may take before it counts as slow |
 | `logged.max-arg-length` | `500` | `maxLength` | Longest argument or result, in characters |
 
-- Levels are `TRACE`, `DEBUG`, `INFO`, `WARN` or `ERROR`.
+- Levels are `TRACE`, `DEBUG`, `INFO`, `WARN` or `ERROR`. Anything else stops startup.
 - With `slower-than` empty, nothing is flagged as slow unless an annotation sets its own `slowerThan`.
 - A longer value is cut and ends with the number of characters left out, such as `…(+1200)`. `0` means no limit.
 - Collections, maps and arrays are logged as their size, such as `ArrayList[size=3]`, never their contents.
@@ -565,9 +653,15 @@ logchi:
 | `Invalid size '…'. Examples: 512KB, 100MB, 5GB` | A size is misspelled. Startup stops |
 | `Unknown level in logchi.levels: …` | A name under `levels` isn't a log level. Startup stops |
 | `Invalid @Logged on …` | A `slowerThan` on an annotation is misspelled. Startup stops |
+| `Invalid logchi.logged.level '…'` | A level under `logged` is misspelled. Startup stops |
+| `Invalid compress-level '…'` | Use 1 to 9. Startup stops |
+| `Invalid file permissions '…'` | Use a form such as `640` or `rw-r-----`. Startup stops |
 | `logchi: cannot write … in …` | The folder isn't writable or the disk is full. The app keeps running and logchi retries every second |
 | `logchi: free disk … is below min-free-disk …, pausing file logs` | The disk is nearly full. The console keeps working |
 | `logchi: free disk recovered …, resuming file logs` | Space came back |
 | `logchi: … events could not be written to disk` | Lines lost while paused or while the folder was unwritable |
 | `logchi: dropped … low-level events because the log queue was full` | The app logged faster than the disk could write. See [async writing](#async-writing) |
+| `logchi: … was removed or replaced, reopening it` | Someone deleted or replaced the live file. logchi started a new one |
+| `logchi: cannot lock instance …` | The `.logchi` folder isn't writable. File names get the process id added |
+| `Invalid queue-size '…'`, `Invalid drop-below '…'` | See [async writing](#async-writing). Startup stops |
 | `logchi: disabled, Logback is not the active SLF4J provider` | The app uses another logging backend, such as Log4j2. logchi needs Logback |

@@ -42,7 +42,22 @@ final class LoggedInterceptor implements MethodInterceptor {
 
     LoggedInterceptor(LogchiSettings.Logged options) {
         this.options = options;
-        this.slowLevel = level(options.getSlowLevel());
+        this.slowLevel = configured("slow-level", options.getSlowLevel());
+        configured("level", options.getLevel());
+        configured("error-level", options.getErrorLevel());
+        if (options.getSlowerThan() != null && !options.getSlowerThan().isEmpty()) {
+            Parse.durationMillis(options.getSlowerThan());
+        }
+    }
+
+    /** Checked when the application starts, so a misspelled level never fails a business call later. */
+    private static Level configured(String key, String value) {
+        try {
+            return level(value);
+        } catch (RuntimeException e) {
+            throw new IllegalArgumentException("Invalid logchi.logged." + key + " '" + value
+                    + "'. Use TRACE, DEBUG, INFO, WARN or ERROR");
+        }
     }
 
     /** Method annotation first, then the class annotation, which covers public methods only. */

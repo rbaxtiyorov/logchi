@@ -1,6 +1,7 @@
 package io.github.rbaxtiyorov.logchi.core.retention;
 
 import io.github.rbaxtiyorov.logchi.core.LogchiSettings.Scope;
+import io.github.rbaxtiyorov.logchi.core.appender.FileModes;
 import io.github.rbaxtiyorov.logchi.core.appender.FileNames;
 import io.github.rbaxtiyorov.logchi.core.instance.FileGuardLock;
 import org.slf4j.Logger;
@@ -55,9 +56,15 @@ public final class Janitor {
     private final long maxTotal;
     private final Scope scope;
     private final Gzipper gzipper;
+    private final FileModes modes;
 
     public Janitor(Path dir, String appName, String instance, FileNames names, Map<String, Policy> policies,
                    boolean compress, int compressLevel, long maxTotal, Scope scope) {
+        this(dir, appName, instance, names, policies, compress, compressLevel, maxTotal, scope, FileModes.DEFAULT);
+    }
+
+    public Janitor(Path dir, String appName, String instance, FileNames names, Map<String, Policy> policies,
+                   boolean compress, int compressLevel, long maxTotal, Scope scope, FileModes modes) {
         this.dir = dir;
         this.lockDir = dir.resolve(".logchi");
         this.appName = appName;
@@ -67,7 +74,8 @@ public final class Janitor {
         this.compress = compress;
         this.maxTotal = maxTotal;
         this.scope = scope;
-        this.gzipper = new Gzipper(compressLevel);
+        this.gzipper = new Gzipper(compressLevel, modes);
+        this.modes = modes;
     }
 
     /** Runs one pass and contains every failure, since an exception would cancel the schedule. */
@@ -79,7 +87,7 @@ public final class Janitor {
         }
     }
 
-    public void run() throws IOException {
+    public synchronized void run() throws IOException {
         if (!Files.isDirectory(dir)) {
             return;
         }
@@ -87,8 +95,17 @@ public final class Janitor {
             pass();
             return;
         }
-        try (FileGuardLock lock = FileGuardLock.tryAcquire(lockDir.resolve(appName + ".janitor.lock"))) {
-            if (lock != null) {
+        FileGuardLock lock;
+        try {
+            lock = FileGuardLock.tryAcquire(lockDir.resolve(appName + ".janitor.lock"));
+        } catch (IOException e) {
+            // The lock folder is unusable. Every step is safe to repeat, so run without the lock.
+            pass();
+            return;
+        }
+        if (lock != null) {
+            try (lock) {
+                modes.applyToFile(lockDir.resolve(appName + ".janitor.lock"));
                 pass();
             }
         }
@@ -182,8 +199,9 @@ public final class Janitor {
                     continue;
                 }
                 rollOrphan(entry);
+                // Deleted while still held, so nobody can take it in between.
+                Files.deleteIfExists(lockFile);
             }
-            Files.deleteIfExists(lockFile);
         }
         sweepStaleLocks(now);
     }
@@ -207,8 +225,8 @@ public final class Janitor {
                     if (lock == null) {
                         continue;
                     }
+                    Files.deleteIfExists(path);
                 }
-                Files.deleteIfExists(path);
             }
         }
     }

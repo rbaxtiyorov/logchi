@@ -23,6 +23,7 @@ public class LogchiSettings {
     private String appName = "";
     private String instanceId = "";
     private int stackTraceLines = 30;
+    private List<String> multilineLoggers = new ArrayList<>();
     private Console console = new Console();
     private File file = new File();
     private Map<String, Sink> levels = defaultLevels();
@@ -49,6 +50,8 @@ public class LogchiSettings {
     public void setInstanceId(String instanceId) { this.instanceId = instanceId; }
     public int getStackTraceLines() { return stackTraceLines; }
     public void setStackTraceLines(int stackTraceLines) { this.stackTraceLines = stackTraceLines; }
+    public List<String> getMultilineLoggers() { return multilineLoggers; }
+    public void setMultilineLoggers(List<String> multilineLoggers) { this.multilineLoggers = multilineLoggers; }
     public Console getConsole() { return console; }
     public void setConsole(Console console) { this.console = console; }
     public File getFile() { return file; }
@@ -82,6 +85,7 @@ public class LogchiSettings {
         private Format format = Format.TEXT;
         private JsonFlavor jsonFlavor = JsonFlavor.ECS;
         private String extension = "txt";
+        private String permissions = "";
         private Rotation rotation = new Rotation();
         private Retention retention = new Retention();
         private Async async = new Async();
@@ -94,6 +98,8 @@ public class LogchiSettings {
         public void setJsonFlavor(JsonFlavor jsonFlavor) { this.jsonFlavor = jsonFlavor; }
         public String getExtension() { return extension; }
         public void setExtension(String extension) { this.extension = extension; }
+        public String getPermissions() { return permissions; }
+        public void setPermissions(String permissions) { this.permissions = permissions; }
         public Rotation getRotation() { return rotation; }
         public void setRotation(Rotation rotation) { this.rotation = rotation; }
         public Retention getRetention() { return retention; }
@@ -164,6 +170,8 @@ public class LogchiSettings {
         private Format format;
         private Boolean async;
         private boolean additive = false;
+        private boolean console = false;
+        private List<String> loggers = new ArrayList<>();
 
         public boolean isEnabled() { return enabled; }
         public void setEnabled(boolean enabled) { this.enabled = enabled; }
@@ -177,6 +185,10 @@ public class LogchiSettings {
         public void setAsync(Boolean async) { this.async = async; }
         public boolean isAdditive() { return additive; }
         public void setAdditive(boolean additive) { this.additive = additive; }
+        public boolean isConsole() { return console; }
+        public void setConsole(boolean console) { this.console = console; }
+        public List<String> getLoggers() { return loggers; }
+        public void setLoggers(List<String> loggers) { this.loggers = loggers; }
     }
 
     public static class Mask {
@@ -207,6 +219,8 @@ public class LogchiSettings {
         private String header = "X-Request-Id";
         private String userId = "principal";
         private List<String> extraHeaders = new ArrayList<>();
+        /** Position of the request filter. The default is Spring's highest precedence plus 10. */
+        private int order = Integer.MIN_VALUE + 10;
 
         public boolean isEnabled() { return enabled; }
         public void setEnabled(boolean enabled) { this.enabled = enabled; }
@@ -218,6 +232,8 @@ public class LogchiSettings {
         public void setUserId(String userId) { this.userId = userId; }
         public List<String> getExtraHeaders() { return extraHeaders; }
         public void setExtraHeaders(List<String> extraHeaders) { this.extraHeaders = extraHeaders; }
+        public int getOrder() { return order; }
+        public void setOrder(int order) { this.order = order; }
     }
 
     public static class Logged {

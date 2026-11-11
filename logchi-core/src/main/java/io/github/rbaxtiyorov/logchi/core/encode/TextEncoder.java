@@ -18,7 +18,7 @@ import java.util.concurrent.ConcurrentHashMap;
 public final class TextEncoder extends LogchiEncoder {
 
     private static final DateTimeFormatter TIME =
-            DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss.SSS").withZone(ZoneId.systemDefault());
+            DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss.SSSXXX").withZone(ZoneId.systemDefault());
     private static final int LOGGER_LENGTH = 36;
     private static final int ABBREVIATION_CACHE = 4096;
 
@@ -29,11 +29,19 @@ public final class TextEncoder extends LogchiEncoder {
     private final TargetLengthBasedClassNameAbbreviator abbreviator =
             new TargetLengthBasedClassNameAbbreviator(LOGGER_LENGTH);
     private final Map<String, String> abbreviated = new ConcurrentHashMap<>();
+    private final Map<String, Boolean> multiline = new ConcurrentHashMap<>();
+    private final List<String> multilineLoggers;
     private final boolean color;
 
     public TextEncoder(Masker masker, int stackTraceLines, boolean color) {
+        this(masker, stackTraceLines, color, List.of());
+    }
+
+    /** Messages of {@code multilineLoggers}, and of loggers below them, keep their line breaks. */
+    public TextEncoder(Masker masker, int stackTraceLines, boolean color, List<String> multilineLoggers) {
         super(masker, stackTraceLines);
         this.color = color;
+        this.multilineLoggers = List.copyOf(multilineLoggers);
     }
 
     @Override
@@ -43,17 +51,24 @@ public final class TextEncoder extends LogchiEncoder {
         sb.append(' ');
         appendLevel(sb, e.getLevel());
         sb.append(' ');
-        dim(sb, "[" + e.getThreadName() + "]");
+        dim(sb, "[" + oneLine(e.getThreadName()) + "]");
         sb.append(' ');
         appendContext(sb, e.getMDCPropertyMap());
         appendLogger(sb, e.getLoggerName());
-        sb.append(" : ").append(masker.mask(oneLine(e.getFormattedMessage())));
+        sb.append(" : ").append(maskedMessage(e, keepsLines(e.getLoggerName()) ? INDENTED : ONE_LINE));
         appendKeyValues(sb, e.getKeyValuePairs());
         sb.append('\n');
         if (e.getThrowableProxy() != null) {
             sb.append(masker.mask(ThrowableRenderer.render(e.getThrowableProxy(), stackTraceLines)));
         }
         return sb.toString();
+    }
+
+    @Override
+    String fallback(ILoggingEvent e, Throwable failure) {
+        return TIME.format(Instant.ofEpochMilli(e.getTimeStamp())) + ' ' + String.format("%-5s", e.getLevel())
+                + " [" + oneLine(e.getThreadName()) + "] " + e.getLoggerName() + " : [logchi could not render this event: "
+                + failure.getClass().getSimpleName() + "]\n";
     }
 
     private void appendLevel(StringBuilder sb, Level level) {
@@ -130,6 +145,20 @@ public final class TextEncoder extends LogchiEncoder {
         }
     }
 
+    private boolean keepsLines(String logger) {
+        if (multilineLoggers.isEmpty()) {
+            return false;
+        }
+        Boolean known = multiline.get(logger);
+        if (known == null) {
+            known = multilineLoggers.stream().anyMatch(p -> logger.equals(p) || logger.startsWith(p + "."));
+            if (multiline.size() < ABBREVIATION_CACHE) {
+                multiline.put(logger, known);
+            }
+        }
+        return known;
+    }
+
     private static String quoted(String value) {
         for (int i = 0; i < value.length(); i++) {
             if (Character.isWhitespace(value.charAt(i))) {
@@ -137,16 +166,5 @@ public final class TextEncoder extends LogchiEncoder {
             }
         }
         return value;
-    }
-
-    /** Escapes line breaks so one event stays one line and user input cannot forge log entries. */
-    private static String oneLine(String value) {
-        if (value == null) {
-            return "null";
-        }
-        if (value.indexOf('\n') < 0 && value.indexOf('\r') < 0) {
-            return value;
-        }
-        return value.replace("\r", "\\r").replace("\n", "\\n");
     }
 }

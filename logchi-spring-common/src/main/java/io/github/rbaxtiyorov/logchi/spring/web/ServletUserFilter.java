@@ -12,7 +12,10 @@ import org.springframework.web.filter.OncePerRequestFilter;
 import java.io.IOException;
 import java.security.Principal;
 
-/** Puts the user id in the MDC. Runs just after Spring Security's chain, which sets the principal. */
+/**
+ * Puts the user id in the MDC. Runs just after Spring Security's chain, which sets the principal.
+ * {@link ServletContextFilter} removes it, so filters between the two still see the user on the way out.
+ */
 public class ServletUserFilter extends OncePerRequestFilter implements Ordered {
 
     private static final int AFTER_SECURITY = -99;
@@ -33,16 +36,11 @@ public class ServletUserFilter extends OncePerRequestFilter implements Ordered {
     protected void doFilterInternal(HttpServletRequest request, HttpServletResponse response, FilterChain chain)
             throws ServletException, IOException {
         String user = resolve(request);
-        if (user == null) {
-            chain.doFilter(request, response);
-            return;
+        if (user != null) {
+            MDC.put(ServletContextFilter.USER_ID, ContextValues.clean(user));
+            request.setAttribute(ServletContextFilter.USER_SET, Boolean.TRUE);
         }
-        MDC.put("userId", ContextValues.clean(user));
-        try {
-            chain.doFilter(request, response);
-        } finally {
-            MDC.remove("userId");
-        }
+        chain.doFilter(request, response);
     }
 
     private String resolve(HttpServletRequest request) {
